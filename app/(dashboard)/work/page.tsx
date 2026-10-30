@@ -76,23 +76,45 @@ export default async function WorkPage({ searchParams }: { searchParams: Promise
       {accountsTotal === 0 ? (
         <EmptyState
           title="No accounts yet"
-          body={config.mode === "live" ? "Import accounts from Clay or the CRM on the Integrations page; the agent team prepares them from there." : "This workspace is empty. Load the demo workspace to see the agent team prepare accounts, or connect an account source."}
-          action={config.mode !== "live" && user.role === "admin" ? <LoadDemoWorkspace /> : <Link href="/console/integrations" className="btn">Integrations</Link>}
+          body={
+            user.role === "admin"
+              ? config.mode === "live"
+                ? "Connect an account source (Clay or the CRM) under Integrations; the agent team prepares accounts from there."
+                : "This workspace is empty. Load the demo workspace to see the agent team prepare accounts, or connect an account source."
+              : user.role === "exec"
+                ? "No accounts have been imported yet. An admin connects the account source; meanwhile you can set up the playbook and sequences reps will use."
+                : "No accounts have been imported yet. Your admin connects the account source; accounts appear here once they are prepared. Meanwhile, review the playbook you will call from."
+          }
+          action={
+            user.role === "admin" ? (
+              config.mode !== "live" ? <LoadDemoWorkspace /> : <Link href="/console/integrations" className="btn">Open Integrations</Link>
+            ) : (
+              <Link href="/playbook" className="btn">
+                {user.role === "exec" ? "Set up the playbook" : "Review the playbook"}
+              </Link>
+            )
+          }
         />
       ) : items.length === 0 ? (
         <EmptyState
           title={EMPTY[view]}
           body={view === "all" ? "The agent team is preparing the next accounts. Accounts still missing information are on the Accounts page." : undefined}
           action={
-            <Link href="/accounts?view=enrichment" className="btn">
-              See accounts in enrichment
-            </Link>
+            view !== "all" ? (
+              <Link href={`/work?${new URLSearchParams({ view: "all", ...(repParam ? { rep: repParam } : {}) }).toString()}`} className="btn">
+                Show all of today&apos;s work
+              </Link>
+            ) : (
+              <Link href={`/accounts?${new URLSearchParams({ view: "enrichment", ...(repParam && repParam !== "all" ? { rep: repParam } : {}) }).toString()}`} className="btn">
+                See accounts in enrichment
+              </Link>
+            )
           }
         />
       ) : (
         <div className="space-y-2">
           {items.map((item) => (
-            <QueueRow key={item.accountId} item={item} />
+            <QueueRow key={item.accountId} item={item} tz={queue.timezone} />
           ))}
         </div>
       )}

@@ -7,7 +7,7 @@
  *
  * It uses the same isolation as the test suite (no other credentials, network
  * limited to localhost and the test project), creates its own uniquely named
- * accounts and never resets the database. Apply supabase/migrations 0001..0004
+ * accounts and never resets the database. Apply supabase/migrations 0001..0005
  * to the test project first.
  */
 import "../test/setup";

@@ -19,6 +19,7 @@ import { useEffect } from "react";
 const VISITOR_KEY = "oi_visitor";
 let visitorId: string | null = null;
 let context: Record<string, unknown> = {};
+let pageToken = "";
 
 export function setTrackingContext(ctx: Record<string, unknown>): void {
   context = { ...ctx };
@@ -49,7 +50,7 @@ export function track(slug: string, event: string, properties: Record<string, un
     void fetch("/api/track", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ slug, event, properties: { ...context, ...properties, $current_url: window.location.href }, visitorId: getVisitorId() }),
+      body: JSON.stringify({ slug, token: pageToken, event, properties: { ...context, ...properties, $current_url: window.location.href }, visitorId: getVisitorId() }),
       keepalive: true,
     }).catch(() => undefined);
   } catch {
@@ -59,13 +60,17 @@ export function track(slug: string, event: string, properties: Record<string, un
 
 export interface TrackerProps {
   slug: string;
+  /** Page token from the personalized URL; the tracking endpoint requires it. */
+  token: string;
   accountId: string;
   campaignId: string;
   isPreview: boolean;
 }
 
-export default function Tracker({ slug, accountId, campaignId, isPreview }: TrackerProps) {
+export default function Tracker({ slug, token, accountId, campaignId, isPreview }: TrackerProps) {
+  pageToken = token;
   useEffect(() => {
+    pageToken = token;
     setTrackingContext({ account_id: accountId, campaign_id: campaignId, is_preview: isPreview });
     getVisitorId();
     track(slug, "page_view", {

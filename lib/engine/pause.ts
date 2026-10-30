@@ -19,7 +19,7 @@ export function isPaused(account: Pick<Account, "pausedUntil">, at = nowIso()): 
 }
 
 export async function pauseAccount(store: Store, providers: Providers, account: Account, until: string, reason: string, by: string): Promise<{ account: Account; external: "not_needed" | "paused" | "pending" | "failed"; error?: string }> {
-  const updated = await store.upsertAccount({ ...account, pausedUntil: until, pauseReason: reason, nextAction: { type: "wait", label: `Paused until ${until.slice(0, 10)}`, reason, dueAt: until } });
+  const updated = (await store.patchAccount(account.id, (cur) => ({ ...cur, pausedUntil: until, pauseReason: reason, nextAction: { type: "wait", label: `Paused until ${until.slice(0, 10)}`, reason, dueAt: until } }))) ?? account;
   await logActivity(store, account.id, "rep", "account_paused", `Outreach paused until ${until.slice(0, 10)} by ${by}: ${reason}`);
   if (!providers.outreach.ownsScheduling || !providers.outreach.pauseSequence) return { account: updated, external: "not_needed" };
   const op = await runOperation(store, { id: `pause:${account.id}:${until}`, kind: "sequence_pause", accountId: account.id, destination: providers.outreach.name, maxAttempts: 5 }, async (key) => {
@@ -36,10 +36,12 @@ export async function pauseAccount(store: Store, providers: Providers, account: 
 
 export async function resumeAccount(store: Store, providers: Providers, account: Account, by: string): Promise<{ account: Account; external: "not_needed" | "resumed" | "pending" | "failed"; error?: string }> {
   const previous = account.pausedUntil;
-  const resumed: Account = { ...account, pausedUntil: null, pauseReason: null };
   const committed = committedOpenTasks(await store.listOutreach({ accountId: account.id }));
-  const nextAction = account.readiness ? nextActionFor(resumed, account.readiness, committed) : null;
-  const updated = await store.upsertAccount({ ...resumed, nextAction });
+  const updated =
+    (await store.patchAccount(account.id, (cur) => {
+      const resumed: Account = { ...cur, pausedUntil: null, pauseReason: null };
+      return { ...resumed, nextAction: cur.readiness ? nextActionFor(resumed, cur.readiness, committed) : null };
+    })) ?? account;
   await logActivity(store, account.id, "rep", "account_resumed", `Outreach resumed by ${by}`);
   if (!previous || !providers.outreach.ownsScheduling || !providers.outreach.resumeSequence) return { account: updated, external: "not_needed" };
   const op = await runOperation(store, { id: `resume:${account.id}:${previous}`, kind: "sequence_pause", accountId: account.id, destination: providers.outreach.name, maxAttempts: 5 }, async (key) => {

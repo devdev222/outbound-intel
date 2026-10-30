@@ -17,6 +17,14 @@ export interface ReadinessResult {
 
 export async function checkReadiness(): Promise<ReadinessResult> {
   const problems = configProblems();
+  if (config.mode === "live") {
+    // Required settings of every selected adapter, from the capability registry.
+    const { effective } = await import("@/lib/capabilities");
+    for (const slot of ["enrichment", "outreach", "dialer", "alerts", "crm", "video", "analytics"] as const) {
+      const e = effective(slot);
+      if (e.missing.length && !problems.some((p) => e.missing.some((m) => p.key === m))) problems.push({ key: `${slot.toUpperCase()}_CONFIG`, problem: `${e.label} is selected for ${slot} but ${e.missing.join(", ")} ${e.missing.length > 1 ? "are" : "is"} missing`, fix: `set ${e.missing.join(", ")}` });
+    }
+  }
   let actual: string | null = null;
   let error: string | undefined;
   let storeKind: string = config.store;
@@ -32,7 +40,7 @@ export async function checkReadiness(): Promise<ReadinessResult> {
     problems.push({
       key: "SCHEMA",
       problem: error ? `store unreachable: ${error}` : `database schema version is ${actual ?? "missing"}, expected ${EXPECTED_SCHEMA_VERSION}`,
-      fix: "apply supabase/migrations/0001..0004 in order (see README), then re-run the check",
+      fix: "apply supabase/migrations/0001..0005 in order (see README), then re-run the check",
     });
   }
   return { ok: problems.length === 0, mode: config.mode, store: storeKind, schema: { expected: EXPECTED_SCHEMA_VERSION, actual, ok: schemaOk, ...(error ? { error } : {}) }, problems };

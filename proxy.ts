@@ -11,6 +11,9 @@ export async function proxy(request: NextRequest) {
   if (authDisabled()) return NextResponse.next();
   if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p)) || pathname === "/favicon.ico") return NextResponse.next();
 
+  // Machine clients authenticate per request with a scoped bearer token; the handler verifies it.
+  if (pathname.startsWith("/api/") && (request.headers.get("authorization") ?? "").toLowerCase().startsWith("bearer ")) return NextResponse.next();
+
   const session = await verifySession(request.cookies.get(SESSION_COOKIE)?.value);
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-pathname", pathname);

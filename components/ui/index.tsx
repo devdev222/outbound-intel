@@ -19,9 +19,9 @@ export function PageHeader({ title, description, actions, eyebrow }: { title: st
   );
 }
 
-export function Card({ title, hint, actions, children, className = "", padded = true }: { title?: string; hint?: string; actions?: ReactNode; children: ReactNode; className?: string; padded?: boolean }) {
+export function Card({ title, hint, actions, children, className = "", padded = true, id }: { title?: string; hint?: string; actions?: ReactNode; children: ReactNode; className?: string; padded?: boolean; id?: string }) {
   return (
-    <section className={`card ${padded ? "p-4" : ""} ${className}`}>
+    <section id={id} className={`card scroll-mt-20 ${padded ? "p-4" : ""} ${className}`}>
       {(title || actions) && (
         <header className={`flex items-start justify-between gap-3 ${padded ? "mb-3" : "px-4 pt-4 pb-2"}`}>
           <div>

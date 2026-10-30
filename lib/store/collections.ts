@@ -72,6 +72,7 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
     assessmentInvite: false,
     angleOverride: null,
   },
+  timezone: process.env.TEAM_TIMEZONE || "America/Chicago",
   updatedAt: "1970-01-01T00:00:00.000Z",
   updatedBy: "defaults",
 };
@@ -82,13 +83,14 @@ export async function getSettings(): Promise<PlatformSettings> {
   return { ...DEFAULT_SETTINGS, ...s, automation: { ...DEFAULT_SETTINGS.automation, ...s.automation }, economics: { ...DEFAULT_SETTINGS.economics, ...s.economics }, defaults: { ...DEFAULT_SETTINGS.defaults, ...(s.defaults ?? {}) } };
 }
 
-export async function updateSettings(patch: Partial<Pick<PlatformSettings, "automation" | "economics" | "defaults">>, by: string): Promise<PlatformSettings> {
+export async function updateSettings(patch: Partial<Pick<PlatformSettings, "automation" | "economics" | "defaults" | "timezone">>, by: string): Promise<PlatformSettings> {
   const current = await getSettings();
   const next: PlatformSettings = {
     ...current,
     automation: { ...current.automation, ...(patch.automation ?? {}) },
     economics: { ...current.economics, ...(patch.economics ?? {}) },
     defaults: { ...current.defaults, ...(patch.defaults ?? {}) },
+    timezone: patch.timezone ?? current.timezone,
     updatedAt: nowIso(),
     updatedBy: by,
   };

@@ -1,4 +1,5 @@
 import { config } from "@/lib/config";
+import { mergeContact } from "./contact";
 import { jerryMcp } from "@/lib/agents/jerry-mcp";
 import type { EnrichmentResult, Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
@@ -49,7 +50,11 @@ export async function enrichAccountContact(store: Store, providers: Providers, a
     } else {
       result = await providers.enrichment.enrichContact(person, account);
     }
-    const contact: Person = { ...result.contact, verifiedBy: result.provenance === "synthetic" ? "synthetic" : (result.contact.verifiedBy ?? result.provider) };
+    // Field-level merge: phone verification is bound to the exact number the provider verified.
+    const source = result.provenance === "synthetic" ? "synthetic" : result.provider;
+    const prev = account.contact && account.contact.name === person.name ? account.contact : person;
+    const merged = mergeContact(prev, { name: result.contact.name, title: result.contact.title, seniority: result.contact.seniority, email: result.contact.email, phone: result.contact.phone, linkedin: result.contact.linkedin, phoneVerified: result.phoneVerified === true }, source);
+    const contact: Person = { ...merged, verifiedBy: result.provenance === "synthetic" ? "synthetic" : (merged.verifiedBy ?? result.provider) };
     const updated = await store.upsertAccount({
       ...account,
       contact,

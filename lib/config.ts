@@ -72,7 +72,7 @@ export const config = {
     dialer: pick("DIALER_PROVIDER", ["mock", "cartage", "test"] as const, "mock"),
     analytics: pick("ANALYTICS_PROVIDER", ["none", "posthog"] as const, "none"),
     alerts: pick("ALERT_PROVIDER", ["console", "slack", "test"] as const, "console"),
-    crm: pick("CRM_PROVIDER", ["mock", "http"] as const, "mock"),
+    crm: pick("CRM_PROVIDER", ["mock", "http", "test"] as const, "mock"),
   },
 
   /**
@@ -179,20 +179,31 @@ export const allowPlaceholders = (): boolean => config.mode !== "live" && config
  * anything that only matters live. Shown on /api/health and the console, and
  * `npm run check` exits non-zero when any exist in live mode.
  */
+/** Live-mode sign-in requirements (kept here to avoid importing auth into config). */
+function authProblemsLite(): string[] {
+  if (process.env.AUTH_PROVIDER !== "oidc") return ["live mode requires AUTH_PROVIDER=oidc; demo password sign-in is disabled"];
+  if (!process.env.OIDC_ISSUER || !process.env.OIDC_CLIENT_ID || !process.env.OIDC_CLIENT_SECRET) return ["OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET are required"];
+  return [];
+}
+
 export function configProblems(): { key: string; problem: string; fix: string }[] {
   const out: { key: string; problem: string; fix: string }[] = [];
   if (config.mode !== "live") return out;
+  for (const p of authProblemsLite()) out.push({ key: "AUTH_PROVIDER", problem: p, fix: "configure OIDC (AUTH_PROVIDER=oidc, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET) and provision users with npm run user:add" });
   if (config.authSecret.length < 32) out.push({ key: "AUTH_SECRET", problem: "session signing secret missing or shorter than 32 characters", fix: "set AUTH_SECRET to a long random value" });
   if (process.env.AUTH_DISABLED === "true") out.push({ key: "AUTH_DISABLED", problem: "AUTH_DISABLED is ignored in live mode but should not be set", fix: "remove AUTH_DISABLED" });
   if (config.store !== "supabase") out.push({ key: "STORE_PROVIDER", problem: `live mode needs durable shared storage, not "${config.store}"`, fix: "set STORE_PROVIDER=supabase and apply supabase/migrations/*.sql in order" });
   if (config.store === "supabase" && !isSupabaseConfigured()) out.push({ key: "SUPABASE_SECRET_KEY", problem: "Supabase URL or server key missing", fix: "set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SECRET_KEY" });
   if (!config.cronSecret) out.push({ key: "CRON_SECRET", problem: "the agent tick endpoint would be callable without a secret", fix: "set CRON_SECRET and send it as a Bearer token from the scheduler" });
-  if (config.providers.enrichment === "mock" || config.providers.enrichment === "test") out.push({ key: "ENRICHMENT_PROVIDER", problem: "no real contact enrichment; accounts will stay blocked on contact verification", fix: "set ENRICHMENT_PROVIDER=clay or http" });
+  // Evaluate the EFFECTIVE enrichment adapter: Jerry over MCP does contact verification when JERRY_MODE=mcp.
+  const jerryEnriches = config.jerry.mode === "mcp";
+  if (jerryEnriches && !config.jerry.mcpUrl && !config.jerry.mcpCommand) out.push({ key: "JERRY_MCP_URL", problem: "JERRY_MODE=mcp but no MCP endpoint is configured; contact verification cannot run", fix: "set JERRY_MCP_URL (or JERRY_MCP_COMMAND + JERRY_MCP_ARGS)" });
+  if (!jerryEnriches && (config.providers.enrichment === "mock" || config.providers.enrichment === "test")) out.push({ key: "ENRICHMENT_PROVIDER", problem: "no real contact enrichment; accounts will stay blocked on contact verification", fix: "set ENRICHMENT_PROVIDER=clay or http, or JERRY_MODE=mcp" });
   if (config.providers.discovery === "clay" && !config.clay.inboundSecret) out.push({ key: "CLAY_WEBHOOK_SECRET", problem: "Clay callbacks enabled without a verification secret", fix: "set CLAY_WEBHOOK_SECRET" });
   if (config.providers.video === "tavus" && !config.tavus.webhookSecret) out.push({ key: "TAVUS_WEBHOOK_SECRET", problem: "Tavus callbacks enabled without a verification token", fix: "set TAVUS_WEBHOOK_SECRET" });
   if (config.providers.outreach === "resend" && !config.resend.webhookSecret) out.push({ key: "RESEND_WEBHOOK_SECRET", problem: "Resend delivery events enabled without signature verification", fix: "set RESEND_WEBHOOK_SECRET (whsec_...)" });
   if (config.calendly.url && !config.calendly.signingKey) out.push({ key: "CALENDLY_WEBHOOK_SIGNING_KEY", problem: "Calendly bookings enabled without signature verification", fix: "set CALENDLY_WEBHOOK_SIGNING_KEY" });
-  if (["test"].includes(config.providers.outreach) || config.providers.alerts === "test" || config.providers.dialer === "test") out.push({ key: "PROVIDERS", problem: "test adapters selected in live mode", fix: "select real providers" });
+  if (["test"].includes(config.providers.outreach) || config.providers.alerts === "test" || config.providers.dialer === "test" || config.providers.crm === "test" || (!jerryEnriches && config.providers.enrichment === "test")) out.push({ key: "PROVIDERS", problem: "test adapters selected in live mode", fix: "select real providers" });
   return out;
 }
 

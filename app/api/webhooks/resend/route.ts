@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { bodyKey, onceResponse } from "@/lib/engine/idempotency";
 import { runAgent } from "@/lib/agents/runtime";
 import { error, json, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
@@ -60,6 +61,8 @@ export async function POST(req: Request) {
   if (!eventType) return json({ ok: true, ignored: type });
 
   const store = getStore();
+  // Persistent idempotency: a redelivered webhook returns the stored response instead of acting twice.
+  return onceResponse(store, "webhook:resend", req.headers.get("svix-id") ?? req.headers.get("webhook-id") ?? bodyKey(raw), async () => {
   const tags = body.data?.tags ?? {};
   const touch = tags.touch_id ? await store.getOutreach(tags.touch_id) : null;
   const account = touch ? await store.getAccountById(touch.accountId) : tags.account_slug ? await store.getAccountBySlug(tags.account_slug) : null;
@@ -70,10 +73,12 @@ export async function POST(req: Request) {
     await logActivity(store, account.id, "webhook", "email_bounced", `Email step ${touch.step} ${type.replace("email.", "")}`);
   }
   const r = await recordEngagement(store, getProviders(), account, {
+    source: "provider",
     eventType,
     properties: { step: touch?.step ?? (Number(tags.step) || undefined), touchId: touch?.id, emailId: body.data?.email_id, link: body.data?.click?.link, source: "resend" },
     visitorId: body.data?.to?.[0] ?? null,
   });
   if (r.activationTriggered) void runAgent("jerry");
   return json({ ok: true, matched: true, slug: account.slug, eventType, activationTriggered: r.activationTriggered });
+  });
 }

@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { newRequestId, requestJson } from "@/lib/client/request";
 import type { OutcomeType } from "@/lib/types";
 import { Spinner } from "./PipelineControls";
 
@@ -20,22 +21,18 @@ export function OutcomeButtons({ slug }: { slug: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
+  // One request id per click: a retry after a timeout never records the outcome twice.
   async function post(label: string, url: string, body?: unknown) {
     setBusy(label);
     setMessage(null);
-    try {
-      const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      if (!res.ok) throw new Error(String(data.error ?? `HTTP ${res.status}`));
-      if ("fedBack" in data) setMessage(`${label}: status ${String(data.status)}${data.fedBack ? " · fed back to history; Learning Agent will retrain" : ""}`);
-      else if (data.run && typeof data.run === "object") setMessage(`${label}: ${String((data.run as { summary?: string }).summary ?? "done")}`);
-      else setMessage(`${label}: done`);
-      router.refresh();
-    } catch (err) {
-      setMessage(`${label} failed: ${(err as Error).message}`);
-    } finally {
-      setBusy(null);
-    }
+    const r = await requestJson<Record<string, unknown>>(url, { body, requestId: newRequestId() });
+    setBusy(null);
+    if (!r.ok) return setMessage(`${label} failed: ${r.error}`);
+    const data = r.data;
+    if ("fedBack" in data) setMessage(`${label}: status ${String(data.status)}${data.fedBack ? " · fed back to history; Learning Agent will retrain" : ""}`);
+    else if (data.run && typeof data.run === "object") setMessage(`${label}: ${String((data.run as { summary?: string }).summary ?? "done")}`);
+    else setMessage(`${label}: done`);
+    router.refresh();
   }
 
   function outcome(o: (typeof OUTCOMES)[number]) {

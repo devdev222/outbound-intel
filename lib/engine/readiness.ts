@@ -1,4 +1,5 @@
 import type { Store } from "@/lib/store";
+import { isPhoneVerified } from "./contact";
 import { isSuppressed, reps as repCol } from "@/lib/store/collections";
 import type { Account, AutomationSettings, NextAction, OutreachChannel, ReadinessCheck, ReadinessReport, Rep, ScoringModel, Task } from "@/lib/types";
 import { MAX_ENRICHMENT_ATTEMPTS } from "./enrichment";
@@ -41,12 +42,12 @@ export function evaluateReadiness(account: Account, ctx: ReadinessContext): Read
     detail: c ? `${c.name}, ${c.title}` : "no contact selected",
   });
   const synthetic = Boolean(ctx.live && c?.verifiedBy === "synthetic");
-  const usableContact = !synthetic && Boolean(c && (c.email || (c.phone && c.phoneVerified) || c.linkedin));
+  const usableContact = !synthetic && Boolean(c && (c.email || isPhoneVerified(c) || c.linkedin));
   checks.push({
     key: "contact",
     label: "Usable contact information",
     pass: usableContact,
-    detail: synthetic ? "contact data is synthetic (mock enrichment); verify with a real provider" : c ? [c.email ? "email" : null, c.phone ? (c.phoneVerified ? "verified phone" : "unverified phone") : null, c.linkedin ? "LinkedIn" : null].filter(Boolean).join(", ") || "no channel on file" : "no contact",
+    detail: synthetic ? "contact data is synthetic (mock enrichment); verify with a real provider" : c ? [c.email ? "email" : null, c.phone ? (isPhoneVerified(c) ? "verified phone" : "unverified phone") : null, c.linkedin ? "LinkedIn" : null].filter(Boolean).join(", ") || "no channel on file" : "no contact",
   });
   const fresh = account.signals.filter((s) => s.status === "verified" && s.type !== "intent" && s.evidence.some((e) => e.url) && daysSince(s.detectedAt) <= ctx.settings.signalFreshnessDays);
   const stale = account.signals.filter((s) => s.status === "verified" && s.type !== "intent" && daysSince(s.detectedAt) > ctx.settings.signalFreshnessDays).length;
@@ -111,7 +112,7 @@ export function nextActionFor(account: Account, report: ReadinessReport, committ
     return { type: "enrich", label: "Back to enrichment", reason: blocker, dueAt: inDays(2) };
   }
   if (account.pendingActivation || account.status === "hot") return { type: "call", label: "Call now", reason: account.pendingActivation ?? "high-intent engagement", dueAt: nowIso() };
-  if (account.contact?.phone && account.contact.phoneVerified) return { type: "call", label: "Call", reason: account.messagingAngle ?? "verified phone and a live signal", dueAt: inDays(0) };
+  if (isPhoneVerified(account.contact)) return { type: "call", label: "Call", reason: account.messagingAngle ?? "verified phone and a live signal", dueAt: inDays(0) };
   if (account.contact?.email) return { type: "email", label: "Send the first touch", reason: "email on file; verified phone pending", dueAt: inDays(0) };
   return { type: "linkedin", label: "Connect on LinkedIn", reason: "no email or verified phone yet", dueAt: inDays(0) };
 }

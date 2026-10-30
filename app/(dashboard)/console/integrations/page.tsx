@@ -14,6 +14,15 @@ const STATUS: Record<ConnectionStatus, { tone: "good" | "warn" | "info" | "bad" 
   mock: { tone: "warn", label: "Mock" },
 };
 
+const KIND_LABEL: Record<Connection["kind"], string> = { mock: "Mock", test: "Test adapter", builtin: "Built in", bridge: "Proposed contract", vendor: "Vendor API" };
+const KIND_HINT: Record<Connection["kind"], string> = {
+  mock: "Synthetic or no-op; demo only",
+  test: "Controllable adapter for automated tests",
+  builtin: "Handled inside this app",
+  bridge: "A contract this app proposes for a Cartage-side service; unverified until the real service passes a test",
+  vendor: "Implemented from the vendor's public API docs",
+};
+
 export default async function ConsoleIntegrationsPage() {
   await requireRole(["admin"]);
   const connections = await getConnections(getStore());
@@ -81,13 +90,22 @@ function ConnectionCard({ c }: { c: Connection }) {
     <article className="card flex flex-col gap-2 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="font-semibold">{c.name}</h3>
-        <Badge tone={s.tone}>{s.label}</Badge>
+        <span className="flex gap-1">
+          {c.status !== "mock" && <Badge title={KIND_HINT[c.kind]}>{KIND_LABEL[c.kind]}</Badge>}
+          <Badge tone={s.tone}>{s.label}</Badge>
+        </span>
       </div>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px]">
         <dt className="text-[var(--muted)]">Provider</dt>
         <dd className="mono">{c.provider}</dd>
         <dt className="text-[var(--muted)]">Transport</dt>
         <dd>{c.transport}</dd>
+        {c.actions.length > 0 && (
+          <>
+            <dt className="text-[var(--muted)]">Actions</dt>
+            <dd>{c.actions.join(", ")}</dd>
+          </>
+        )}
         <dt className="text-[var(--muted)]">Last success</dt>
         <dd>{c.lastSuccessAt ? fmtAgo(c.lastSuccessAt) : "never"}</dd>
         <dt className="text-[var(--muted)]">Last error</dt>

@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { bodyKey, onceResponse } from "@/lib/engine/idempotency";
 import { runAgent } from "@/lib/agents/runtime";
 import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
@@ -46,34 +47,38 @@ export async function POST(req: Request) {
     return error("invalid JSON");
   }
   if (!body.event || !body.payload) return error("event and payload are required");
+  const event = { ...body, event: body.event, payload: body.payload };
 
   const store = getStore();
+  // Persistent idempotency: a redelivered webhook returns the stored response instead of acting twice.
+  return onceResponse(store, "webhook:calendly", bodyKey(raw), async () => {
   const all = await store.listAccounts();
-  const utm = body.payload.tracking?.utm_campaign ?? "";
-  const emailDomain = body.payload.email?.split("@")[1]?.toLowerCase() ?? "";
+  const utm = event.payload.tracking?.utm_campaign ?? "";
+  const emailDomain = event.payload.email?.split("@")[1]?.toLowerCase() ?? "";
   const account =
     (utm && all.find((a) => a.slug === utm)) || (emailDomain && all.find((a) => a.domain.toLowerCase().replace(/^www\./, "") === emailDomain.replace(/^www\./, ""))) || null;
   if (!account) return json({ ok: true, matched: false });
 
-  if (body.event === "invitee.created") {
+  if (event.event === "invitee.created") {
     const r = await recordOutcome(store, getProviders(), account, {
       outcomeType: "meeting_booked",
-      notes: `Calendly: ${body.payload.scheduled_event?.name ?? "meeting"} at ${body.payload.scheduled_event?.start_time ?? "?"} with ${body.payload.name ?? body.payload.email ?? "invitee"}`,
+      notes: `Calendly: ${event.payload.scheduled_event?.name ?? "meeting"} at ${event.payload.scheduled_event?.start_time ?? "?"} with ${event.payload.name ?? event.payload.email ?? "invitee"}`,
       source: "calendly",
     });
     if (r.fedBack) void runAgent("learning", { force: true });
     return json({ ok: true, matched: true, slug: account.slug, outcome: "meeting_booked" });
   }
-  if (body.event === "invitee.canceled") {
+  if (event.event === "invitee.canceled") {
     await store.insertEvent({
       id: crypto.randomUUID(),
       accountId: account.id,
       eventType: "meeting_canceled",
-      properties: { source: "calendly", name: body.payload.name, email: body.payload.email },
+      properties: { source: "calendly", name: event.payload.name, email: event.payload.email },
       visitorId: null,
       createdAt: new Date().toISOString(),
     });
     return json({ ok: true, matched: true, slug: account.slug, event: "meeting_canceled" });
   }
-  return json({ ok: true, matched: true, ignored: body.event });
+  return json({ ok: true, matched: true, ignored: event.event });
+  });
 }

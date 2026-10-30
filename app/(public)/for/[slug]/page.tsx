@@ -71,7 +71,7 @@ export default async function PersonalizedPage({ params }: Params) {
 
   return (
     <>
-      <Tracker slug={account.slug} accountId={record.account_id} campaignId={record.campaign_id} isPreview={isPreview} />
+      <Tracker slug={account.slug} token={token} accountId={record.account_id} campaignId={record.campaign_id} isPreview={isPreview} />
 
       {config.demoBanner && (
         <a className={`cp-flag${isPreview ? "" : " cp-flag--muted"}`} href="/" role="note" title="Demo environment: company data on this page is synthetic">

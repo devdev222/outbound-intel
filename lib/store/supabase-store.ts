@@ -110,6 +110,8 @@ export class SupabaseStore implements Store {
       experiments: a.experiments ?? {},
       pipeline_value: a.pipelineValue ?? null,
       crm_owner: a.crmOwner ?? null,
+      rejected_contacts: a.rejectedContacts ?? [],
+      contact_hold: a.contactHold ?? null,
       created_at: a.createdAt,
       updated_at: new Date().toISOString(),
     };
@@ -166,6 +168,8 @@ export class SupabaseStore implements Store {
       experiments: (r.experiments as Record<string, string>) ?? {},
       pipelineValue: r.pipeline_value === null || r.pipeline_value === undefined ? null : Number(r.pipeline_value),
       crmOwner: (r.crm_owner as string) ?? null,
+      rejectedContacts: (r.rejected_contacts as Account["rejectedContacts"]) ?? [],
+      contactHold: (r.contact_hold as Account["contactHold"]) ?? null,
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
     };
@@ -263,6 +267,30 @@ export class SupabaseStore implements Store {
     return this.rowToAccount(data);
   }
 
+  /**
+   * Compare-and-swap on updated_at: read, apply fn to the latest row, write only
+   * if nobody else wrote in between; otherwise re-read and retry.
+   */
+  async patchAccount(id: string, fn: (current: Account) => Account | null): Promise<Account | null> {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { data: row, error } = await this.db.from("accounts").select("*").eq("id", id).maybeSingle();
+      if (error) this.fail("patchAccount(read)", error);
+      if (!row) return null;
+      const next = fn(this.rowToAccount(row));
+      if (!next) return this.rowToAccount(row);
+      const { data, error: werr } = await this.db
+        .from("accounts")
+        .update(this.accountToRow({ ...next, id }))
+        .eq("id", id)
+        .eq("updated_at", row.updated_at as string)
+        .select("*");
+      if (werr) this.fail("patchAccount(write)", werr);
+      if (data && data.length) return this.rowToAccount(data[0]);
+      await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+    }
+    throw new Error(`[supabase] patchAccount: account ${id} kept changing; gave up after 8 attempts`);
+  }
+
   async upsertAccounts(accounts: Account[]): Promise<void> {
     if (!accounts.length) return;
     // Chunk to stay well under request size limits with large jsonb facts.
@@ -283,6 +311,12 @@ export class SupabaseStore implements Store {
   async listHistorical(): Promise<HistoricalRecord[]> {
     const rows = await this.pageAll(() => this.db.from("historical_accounts").select("*").order("id"), "listHistorical");
     return rows.map((r) => this.rowToHistorical(r));
+  }
+
+  async getHistorical(id: string): Promise<HistoricalRecord | null> {
+    const { data, error } = await this.db.from("historical_accounts").select("*").eq("id", id).maybeSingle();
+    if (error) this.fail("getHistorical", error);
+    return data ? this.rowToHistorical(data) : null;
   }
 
   async upsertHistorical(record: HistoricalRecord): Promise<void> {

@@ -54,7 +54,7 @@ describe("store round trips", () => {
     const url = process.env.SUPABASE_TEST_URL!;
     assert.ok(!url.includes(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "never-matches"), "refusing to run against the production project");
     const store = new SupabaseStore(url, process.env.SUPABASE_TEST_KEY!);
-    assert.equal(await store.schemaVersion(), "4", "apply supabase/migrations 0001..0004 to the test project first");
+    assert.equal(await store.schemaVersion(), "5", "apply supabase/migrations 0001..0005 to the test project first");
     await roundTrip(store);
   });
 });

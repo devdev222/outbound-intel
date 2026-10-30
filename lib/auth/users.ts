@@ -38,7 +38,13 @@ function safeEq(a: string, b: string): boolean {
   return timingSafeEqual(ha, hb);
 }
 
+/**
+ * Demo password sign-in. Refused outright in live mode and whenever the
+ * OIDC provider is selected: production identities come only from the IdP.
+ */
 export async function authenticate(email: string, password: string): Promise<User | null> {
+  const { demoSignInAllowed } = await import("./oidc");
+  if (!demoSignInAllowed()) return null;
   await ensureDemoIdentities();
   const user = (await userCol.list()).find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
   if (!user) return null;

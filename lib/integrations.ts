@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { jerryMcp } from "@/lib/agents/jerry-mcp";
+import { descriptor, effective, type ProviderKind, type Slot } from "@/lib/capabilities";
 import { config, hasLlm, isSupabaseConfigured } from "@/lib/config";
 import type { Store } from "@/lib/store";
 import type { Operation } from "@/lib/types";
@@ -50,6 +51,10 @@ export interface Connection {
   name: string;
   capability: Capability;
   provider: string;
+  /** mock | test | builtin | bridge (contract proposed by this repo) | vendor (public vendor API). */
+  kind: ProviderKind;
+  /** Operations this adapter supports, from the capability registry. */
+  actions: string[];
   transport: string;
   status: ConnectionStatus;
   /** One line describing what this adapter is doing right now. */
@@ -95,6 +100,27 @@ interface Spec {
   test: Connection["test"];
   /** Operations whose destination is this connection's adapter (runtime health). */
   ops?: { kinds: Operation["kind"][]; destination: string };
+}
+
+const SLOT_FOR: Record<string, Slot> = { enrichment: "enrichment", outreach: "outreach", dialer: "dialer", alerts: "alerts", crm: "crm", video: "video", analytics: "analytics" };
+const OTHER_KIND: Record<string, (provider: string) => ProviderKind> = {
+  discovery: (p) => (p === "clay" ? "vendor" : "mock"),
+  rb2b: (p) => (p === "rb2b" ? "vendor" : "builtin"),
+  anthropic: (p) => (p === "anthropic" ? "vendor" : "builtin"),
+  jerry: (p) => (p === "jerry-mcp" ? "bridge" : "builtin"),
+  calendly: (p) => (p === "calendly" ? "vendor" : "builtin"),
+  store: (p) => (p === "supabase" ? "vendor" : p === "memory" ? "mock" : "builtin"),
+};
+
+/** Attach kind and supported actions from the capability registry (the single source). */
+function withRegistry(s: Spec): Spec & { kind: ProviderKind; actions: string[] } {
+  const slot = SLOT_FOR[s.id];
+  if (slot) {
+    const e = effective(slot);
+    const desc = e.id === "jerry-mcp" ? null : descriptor(slot, e.id);
+    return { ...s, kind: e.kind, actions: desc?.actions ?? ["enrichContact (enrich_contact tool)"] };
+  }
+  return { ...s, kind: (OTHER_KIND[s.id] ?? (() => "builtin" as ProviderKind))(s.provider), actions: [] };
 }
 
 export function connectionSpecs(): Spec[] {
@@ -274,6 +300,7 @@ export function connectionSpecs(): Spec[] {
       envVars: [v("CRM_PROVIDER"), v("CRM_EXPORT_URL"), v("CRM_API_KEY", true)],
       steps: ["Expose an export endpoint returning historical prospects (signalKeys, persona, outcome, messagingAngle).", "Accept POST {CRM_EXPORT_URL}/outcomes for write-back.", "Set CRM_PROVIDER=http and re-run Learn."],
       test: p.crm === "http" ? { available: Boolean(config.crm.exportUrl), sideEffect: null } : null,
+      ops: { kinds: ["crm_sync"], destination: p.crm },
     },
     {
       id: "calendly",
@@ -317,7 +344,7 @@ export function connectionSpecs(): Spec[] {
       mode: config.store === "supabase" ? "durable, shared by web and workers" : config.store === "memory" ? "in-memory (ephemeral demo)" : "local JSON files in .data/",
       unlocks: "Durable, shared state for several workers and the web app.",
       envVars: [v("STORE_PROVIDER"), v("NEXT_PUBLIC_SUPABASE_URL"), v("SUPABASE_SECRET_KEY", true)],
-      steps: ["Create a project; apply supabase/migrations/0001..0004 in order.", "Set STORE_PROVIDER=supabase, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY (server only)."],
+      steps: ["Create a project; apply supabase/migrations/0001..0005 in order.", "Set STORE_PROVIDER=supabase, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY (server only)."],
       test: { available: true, sideEffect: null },
     },
   ];
@@ -347,11 +374,11 @@ function latest<T>(rows: T[], at: (r: T) => string | null | undefined): T | null
 }
 
 export async function getConnections(store: Store): Promise<Connection[]> {
-  const specs = connectionSpecs();
   const [tests, ops, accounts] = await Promise.all([store.listDocs<IntegrationTestRecord>(TESTS), store.listOperations({ limit: 2000 }), store.listAccounts()]);
   const testById = new Map(tests.map((t) => [t.id, t]));
   const mcp = jerryMcp.status();
 
+  const specs = connectionSpecs().map(withRegistry);
   return specs.map((s): Connection => {
     const fp = fingerprintFor(s);
     const rawTest = testById.get(s.id) ?? null;
@@ -427,7 +454,9 @@ export async function getConnections(store: Store): Promise<Connection[]> {
       lastSuccessAt,
       lastError,
       lastTest,
-      nextAction,
+      nextAction: s.kind === "bridge" && status !== "verified" && status !== "mock" ? `${nextAction}. This is a contract proposed by this app: Cartage must implement or confirm it before it can be called production-ready.` : nextAction,
+      kind: s.kind,
+      actions: s.actions,
     };
   });
 }

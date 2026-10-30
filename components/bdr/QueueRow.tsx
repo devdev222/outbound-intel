@@ -1,26 +1,18 @@
+import { isPhoneVerified } from "@/lib/engine/contact-fields";
 import Link from "next/link";
 import { TaskActions } from "@/components/dashboard/TaskActions";
 import { Badge, fmtAgo } from "@/components/ui";
+import { DueLabel } from "@/components/ui/DueLabel";
 import { CATEGORY_LABEL, type QueueItem } from "@/lib/engine/workqueue";
 import { CallAction } from "./CallAction";
 import { CloseAccount } from "./CloseAccount";
 import { ConversationPanel, type PanelContext } from "./ConversationPanel";
 
-function dueLabel(iso: string | null): string {
-  if (!iso) return "";
-  const ms = new Date(iso).getTime() - Date.now();
-  const days = Math.round(ms / 86_400_000);
-  if (Math.abs(ms) < 3_600_000) return "due now";
-  if (ms < 0) return days <= -1 ? `${-days}d overdue` : "due earlier today";
-  if (days === 0) return `due ${iso.slice(11, 16)}`;
-  if (days === 1) return "due tomorrow";
-  return `due ${iso.slice(0, 10)}`;
-}
 
 const TONE: Record<QueueItem["category"], "accent" | "info" | "warn" | "bad"> = { now: "accent", meetings: "info", follow_ups: "warn", needs_attention: "bad" };
 
 /** One compact row per account: who, why now, next action + due, one primary action; everything else on expand. */
-export function QueueRow({ item }: { item: QueueItem }) {
+export function QueueRow({ item, tz }: { item: QueueItem; tz: string }) {
   const c = item.contact;
   const ctx: PanelContext = {
     slug: item.slug,
@@ -31,6 +23,8 @@ export function QueueRow({ item }: { item: QueueItem }) {
     proofPlaceholder: item.proof?.placeholder,
     contact: c,
     preparedFollowUp: item.preparedFollowUp,
+    whyNow: item.whyNow,
+    nextAction: item.next.label,
   };
   const p = item.primary;
 
@@ -57,7 +51,9 @@ export function QueueRow({ item }: { item: QueueItem }) {
             {p.kind === "task" && <span className="mr-1 text-[var(--muted)]">{p.item.channelLabel}:</span>}
             {item.next.label}
           </div>
-          <div className={item.next.overdue ? "text-[var(--bad)]" : "text-[var(--muted)]"}>{dueLabel(item.next.dueAt)}</div>
+          <div>
+            <DueLabel iso={item.next.dueAt} tz={tz} />
+          </div>
         </div>
         {p.kind === "task" && (
           <div className="shrink-0">
@@ -84,7 +80,7 @@ export function QueueRow({ item }: { item: QueueItem }) {
                 <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   {c.phone && (
                     <span className="mono">
-                      {c.phone} {c.phoneVerified ? <Badge tone="good">verified</Badge> : <Badge>unverified</Badge>}
+                      {c.phone} {isPhoneVerified(c) ? <Badge tone="good">verified</Badge> : <Badge>unverified</Badge>}
                     </span>
                   )}
                   {c.email && <span className="mono text-[var(--text-2)]">{c.email}</span>}
@@ -124,8 +120,13 @@ export function QueueRow({ item }: { item: QueueItem }) {
               <div className="rounded-md bg-[var(--warn-soft)] p-2.5">
                 <div className="font-semibold text-[var(--warn)]">Needs attention</div>
                 <ul className="mt-1 list-disc pl-4 text-[var(--text-2)]">
-                  {item.attention.map((b) => (
-                    <li key={b}>{b}</li>
+                  {item.attentionItems.map((b) => (
+                    <li key={b.text}>
+                      {b.text}{" "}
+                      <Link href={b.href} className="text-[var(--info)] hover:underline">
+                        {b.action}
+                      </Link>
+                    </li>
                   ))}
                 </ul>
               </div>

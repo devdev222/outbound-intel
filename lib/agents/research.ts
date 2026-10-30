@@ -54,7 +54,7 @@ function templateBrief(account: Account, contact: Person | null): string {
 }
 
 async function researchAccount(account: Account, ctx: AgentContext): Promise<Account> {
-  const fallbackContact = account.contact ?? pickContact(account.facts.people, ctx.model);
+  const fallbackContact = account.contact ?? pickContact(account.facts.people, ctx.model, account);
   const result = await generateStructured({
     schema: ResearchSchema,
     effort: "low",

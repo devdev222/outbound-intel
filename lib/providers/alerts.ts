@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isPhoneVerified } from "@/lib/engine/contact";
 import { config } from "@/lib/config";
 import type { HotLeadAlert } from "@/lib/types";
 import { httpJson } from "./http";
@@ -11,7 +12,7 @@ export function renderAlertText(a: HotLeadAlert): string {
     ``,
     `Account: ${a.companyName}`,
     a.contact ? `Contact: ${a.contact.name}, ${a.contact.title}` : `Contact: (not yet identified)`,
-    a.contact?.phone ? `Phone: ${a.contact.phone}${a.contact.phoneVerified ? " (verified)" : ""}` : null,
+    a.contact?.phone ? `Phone: ${a.contact.phone}${isPhoneVerified(a.contact) ? " (verified)" : ""}` : null,
     ``,
     `Original Signals:`,
     ...a.originalSignals.map((s) => `• ${s}`),
@@ -62,7 +63,7 @@ function buildBlocks(a: HotLeadAlert) {
       type: "section",
       fields: [
         { type: "mrkdwn", text: trunc(`*Contact*\n${a.contact ? `${a.contact.name}, ${a.contact.title}` : "not identified"}`, 2000) },
-        { type: "mrkdwn", text: trunc(`*Phone*\n${a.contact?.phone ?? "n/a"}${a.contact?.phoneVerified ? " ✅" : ""}`, 2000) },
+        { type: "mrkdwn", text: trunc(`*Phone*\n${a.contact?.phone ?? "n/a"}${isPhoneVerified(a.contact) ? " ✅" : ""}`, 2000) },
         { type: "mrkdwn", text: trunc(`*Priority*\n${a.priorityAfter}/100 (${a.priorityAfter >= a.priorityBefore ? "↑" : "↓"}${Math.abs(a.priorityAfter - a.priorityBefore)})`, 2000) },
         { type: "mrkdwn", text: trunc(`*Triggered by*\n${a.triggeredBy}`, 2000) },
       ],

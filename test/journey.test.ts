@@ -1,8 +1,19 @@
-import { beforeEach, describe, it } from "node:test";
+import { after, before, beforeEach, describe, it } from "node:test";
+import { config } from "@/lib/config";
+import { resetProviders } from "@/lib/providers";
 import { fresh } from "./helpers";
 import { runJourney } from "./journey";
 
 describe("definition-of-done journey (memory store + test adapters)", () => {
+  const prevCrm = config.providers.crm;
+  before(() => {
+    Object.assign(config.providers, { crm: "test" });
+    resetProviders();
+  });
+  after(() => {
+    Object.assign(config.providers, { crm: prevCrm });
+    resetProviders();
+  });
   beforeEach(async () => {
     await fresh();
   });

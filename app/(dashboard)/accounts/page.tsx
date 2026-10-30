@@ -1,3 +1,4 @@
+import { isPhoneVerified } from "@/lib/engine/contact-fields";
 import Link from "next/link";
 import { Badge, EmptyState, Meter, PageHeader, Tabs, fmtAgo } from "@/components/ui";
 import { requireRole } from "@/lib/auth";
@@ -26,13 +27,14 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
   const repName = new Map(reps.map((r) => [r.id, r.name]));
   const repFilter = sp.rep ?? (user.role === "bdr" ? user.repId ?? "" : "");
 
-  const base = accounts.filter((a) => !["disqualified"].includes(a.status));
+  // Rep and search filters apply first, so every tab count matches what the tab shows.
+  const base = accounts
+    .filter((a) => !["disqualified"].includes(a.status))
+    .filter((a) => !repFilter || a.ownerRepId === repFilter)
+    .filter((a) => !q || a.companyName.toLowerCase().includes(q) || a.industry.toLowerCase().includes(q) || a.signals.some((s) => s.label.toLowerCase().includes(q)) || (a.contact?.name.toLowerCase().includes(q) ?? false));
   const ready = base.filter((a) => a.readiness?.ready && !["won", "lost"].includes(a.status));
   const enrichment = base.filter((a) => a.status === "needs_enrichment" || (a.readiness && !a.readiness.ready && (a.scores?.total ?? 0) >= 50));
-  let rows = view === "ready" ? ready : view === "enrichment" ? enrichment : base;
-  if (repFilter) rows = rows.filter((a) => a.ownerRepId === repFilter);
-  if (q) rows = rows.filter((a) => a.companyName.toLowerCase().includes(q) || a.industry.toLowerCase().includes(q) || a.signals.some((s) => s.label.toLowerCase().includes(q)) || (a.contact?.name.toLowerCase().includes(q) ?? false));
-  rows = [...rows].sort((x, y) => y.priority - x.priority);
+  const rows = [...(view === "ready" ? ready : view === "enrichment" ? enrichment : base)].sort((x, y) => y.priority - x.priority);
 
   const query = (patch: Record<string, string>) => {
     const p = new URLSearchParams({ view, ...(q ? { q } : {}), ...(repFilter ? { rep: repFilter } : {}), ...patch });
@@ -124,7 +126,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
                                 <div className="font-medium">{c.name}</div>
                                 <div className="flex flex-wrap items-center gap-1 text-[12px] text-[var(--muted)]">
                                   {c.title}
-                                  {c.phone && <Badge tone={c.phoneVerified ? "good" : "neutral"}>{c.phoneVerified ? "phone ✓" : "phone"}</Badge>}
+                                  {c.phone && <Badge tone={isPhoneVerified(c) ? "good" : "neutral"}>{isPhoneVerified(c) ? "phone ✓" : "phone"}</Badge>}
                                   {c.email && <Badge>email</Badge>}
                                   {c.linkedin && <Badge>LinkedIn</Badge>}
                                 </div>
