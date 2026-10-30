@@ -12,6 +12,7 @@ export function navFor(user: User): NavSection[] {
       { href: "/exec", label: "Command center" },
       { href: "/pipeline", label: "Pipeline" },
       { href: "/intelligence", label: "Intelligence" },
+      { href: "/playbook", label: "Playbook & sequences" },
       { href: "/lab", label: "Experiments" },
       { href: "/capacity", label: "Capacity" },
       { href: "/gifting", label: "Gifting" },
@@ -23,6 +24,7 @@ export function navFor(user: User): NavSection[] {
       { href: "/work", label: "Today" },
       { href: "/accounts", label: "Accounts" },
       { href: "/proof", label: "Customer proof" },
+      { href: "/playbook", label: "Playbook" },
     ],
   };
   const admin: NavSection = {
@@ -40,7 +42,8 @@ export function navFor(user: User): NavSection[] {
   };
   if (user.role === "bdr") return [bdr];
   if (user.role === "exec") return [exec, { label: "Team", items: [{ href: "/work", label: "BDR queue" }, { href: "/accounts", label: "Accounts" }, { href: "/proof", label: "Customer proof" }] }];
-  return [exec, bdr, admin];
+  // Admins already reach the playbook from the executive section.
+  return [exec, { ...bdr, items: bdr.items.filter((i) => i.href !== "/playbook") }, admin];
 }
 
 export function AppShell({ user, children, synthetic }: { user: User; children: ReactNode; synthetic: boolean }) {

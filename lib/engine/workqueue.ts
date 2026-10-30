@@ -4,6 +4,7 @@ import type { Store } from "@/lib/store";
 import { conversations as convCol, getSettings, proofStories } from "@/lib/store/collections";
 import type { Account, Alert, Conversation, NextAction, OutreachChannel, ProofStory, Task } from "@/lib/types";
 import { nowIso } from "@/lib/util";
+import { getPlaybook } from "./playbook";
 import { rankProof } from "./proof";
 import { OPEN_STATUSES, type TaskAction, primaryActionFor } from "./tasks";
 
@@ -75,6 +76,8 @@ export interface QueueItem {
   readinessBlockers: string[];
   pageUrl: string;
   pausedUntil: string | null;
+  /** Your playbook's objection handling, for the call. */
+  objections: { objection: string; response: string }[];
 }
 
 export interface WorkQueue {
@@ -136,6 +139,7 @@ export async function buildWorkQueue(store: Store, providers: Providers, repId: 
     convCol.list(),
     proofStories.list(),
   ]);
+  const objections = (await getPlaybook()).objections.slice(0, 4).map((o) => ({ objection: o.objection, response: o.response }));
   const now = nowIso();
   const todayEnd = endOfToday();
   const mine = (repId ? accounts.filter((a) => a.ownerRepId === repId) : accounts).filter((a) => !["won", "lost", "disqualified"].includes(a.status));
@@ -228,6 +232,7 @@ export async function buildWorkQueue(store: Store, providers: Providers, repId: 
       readinessBlockers: a.readiness?.blockers ?? [],
       pageUrl: a.campaign?.pageUrl ?? `${config.appUrl}/for/${a.slug}`,
       pausedUntil: isPaused ? (a.pausedUntil ?? null) : null,
+      objections,
     });
   }
 

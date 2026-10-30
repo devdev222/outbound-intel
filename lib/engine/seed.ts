@@ -42,6 +42,8 @@ export async function seed(opts: { count?: number; reset?: boolean; runPipeline?
 
   const { ensureDemoIdentities } = await import("@/lib/auth/users");
   await ensureDemoIdentities();
+  // Example playbook, templates and a team sequence exist before campaigns launch, so the demo uses them.
+  if (opts.platformDemo !== false) await (await import("./seed-content")).seedContentDemo();
   const runs =
     opts.runPipeline === false
       ? []

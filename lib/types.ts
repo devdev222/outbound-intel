@@ -154,12 +154,118 @@ export type ScoreCategory = keyof Weights;
 // Campaign
 // ---------------------------------------------------------------------------
 
+/**
+ * The campaign settings an account launches with: the team's defaults
+ * (Playbook > Campaign defaults), overridden only by the Lab experiments the
+ * account is enrolled in. Nothing is randomized outside an experiment.
+ */
 export interface ExperimentArms {
+  /** landing_page: links point at the personalized page. direct_link: links point straight at the booking link. */
   contentFormat: "landing_page" | "direct_link";
   videoType: "ai" | "rep";
   personalization: "deep" | "conventional";
+  /** A: your playbook / learned angle. B: the catalog alternative. */
   angleVariant: "A" | "B";
   gifting: "gift" | "control";
+  /** matched: industry-matched customer story. generic: the general story. none: no customer claim. */
+  proofMode?: "matched" | "generic" | "none";
+  /** Invite the prospect to the freight assessment in the first email. */
+  assessmentInvite?: boolean;
+  /** A specific angle sentence that replaces the playbook/learned angle (angle experiments, rolled-out winners). */
+  angleOverride?: string | null;
+  /** Sequence to use instead of the matching/default one (sequence experiments). */
+  sequenceId?: string | null;
+  /** Replace one step's template (template experiments): step number (1-based) and template id. */
+  templateStep?: number | null;
+  templateId?: string | null;
+}
+
+export type CampaignDefaults = Required<Pick<ExperimentArms, "contentFormat" | "videoType" | "personalization" | "angleVariant" | "gifting" | "proofMode" | "assessmentInvite">> & { angleOverride: string | null };
+
+// ---------------------------------------------------------------------------
+// Playbook, sequences and message templates (the team's own content)
+// ---------------------------------------------------------------------------
+
+export type TemplateChannel = "email" | "linkedin" | "inmail" | "call";
+
+export interface MessageTemplate {
+  id: string;
+  name: string;
+  channel: TemplateChannel;
+  /** Email only. */
+  subject: string | null;
+  body: string;
+  tags: string[];
+  /** Only approved templates go to prospects in live mode; uploads arrive as drafts. */
+  status: "draft" | "approved" | "archived";
+  source: "manual" | "upload";
+  fileName?: string | null;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SequenceChannel = "email" | "linkedin" | "inmail" | "call" | "gift";
+
+export interface SequenceStep {
+  id: string;
+  /** Days after launch. */
+  day: number;
+  channel: SequenceChannel;
+  title: string;
+  /** null: the engine writes this step from the account's research and your playbook. */
+  templateId: string | null;
+  note?: string | null;
+}
+
+export interface Sequence {
+  id: string;
+  name: string;
+  description: string;
+  steps: SequenceStep[];
+  status: "draft" | "active" | "archived";
+  /** The one sequence used when no segment-specific sequence matches. */
+  isDefault: boolean;
+  /** Segment rule; empty lists match everyone. Higher priority wins among matches. */
+  appliesTo: { industries: string[]; sizeBands: string[]; signalKeys: string[] };
+  priority: number;
+  builtIn?: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlaybookSignalAngle {
+  signalKey: string;
+  angle: string;
+  talkingPoints: string[];
+}
+
+export interface PlaybookPersona {
+  id: string;
+  title: string;
+  pains: string;
+  angle: string;
+}
+
+export interface PlaybookObjection {
+  id: string;
+  objection: string;
+  response: string;
+}
+
+/** The team's own playbook. Overrides the learned playbook wherever both have an answer. */
+export interface CompanyPlaybook {
+  id: "global";
+  positioning: string;
+  toneRules: string[];
+  avoid: string[];
+  signalAngles: PlaybookSignalAngle[];
+  personas: PlaybookPersona[];
+  objections: PlaybookObjection[];
+  updatedAt: string;
+  updatedBy: string;
 }
 
 /**
@@ -223,6 +329,8 @@ export interface Campaign {
   sequenceId?: string | null;
   /** Approved proof story the copy cites, or null when none qualified. */
   proofStoryId?: string | null;
+  /** The team sequence the tasks were built from. */
+  sequence?: { id: string; name: string } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -738,7 +846,8 @@ export interface Conversation {
 // Experiments
 // ---------------------------------------------------------------------------
 
-export type ExperimentType = "email" | "video" | "landing_page" | "assessment" | "gifting" | "testimonial";
+/** What an experiment changes. Each type owns a set of campaign settings; two running experiments may not change the same one. */
+export type ExperimentType = "sequence" | "template" | "angle" | "video" | "landing_page" | "proof" | "assessment" | "gifting";
 export type ExperimentMetric = "qualified_pipeline" | "meetings_held" | "opportunities" | "meetings_booked";
 
 export interface ExperimentArm {
@@ -771,6 +880,10 @@ export interface Experiment {
   startedAt: string | null;
   endedAt: string | null;
   createdBy: string;
+  /** Arms per arm needed before reading results (default 30). */
+  targetPerArm?: number;
+  /** Set when a winner was rolled out as the new default. */
+  rollout?: { armKey: string; at: string; by: string; applied: string } | null;
 }
 
 export interface ArmResult {
@@ -785,6 +898,9 @@ export interface ArmResult {
   cost: number;
   conversionRate: number;
   costPerOpportunity: number | null;
+  /** Funnel context (not success metrics): accounts whose first touch went out, and that engaged with anything. */
+  touched?: number;
+  engaged?: number;
 }
 
 export interface ExperimentResults {
@@ -949,6 +1065,8 @@ export interface PlatformSettings {
   id: "global";
   automation: AutomationSettings;
   economics: EconomicsSettings;
+  /** What every campaign launches with unless a Lab experiment changes it. */
+  defaults: CampaignDefaults;
   updatedAt: string;
   updatedBy: string;
 }

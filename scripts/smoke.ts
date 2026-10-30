@@ -141,6 +141,8 @@ try {
   check("BDR cannot toggle agents", (await call("POST", "/api/agents/scoring/toggle", { enabled: false }, bdr)).status === 403);
   check("BDR cannot run agents", (await call("POST", "/api/agents/scoring/run", {}, bdr)).status === 403);
   check("BDR cannot run integration tests", (await call("POST", "/api/integrations/store/test", {}, bdr)).status === 403);
+  check("BDR can read templates and sequences", (await call("GET", "/api/templates", undefined, bdr)).status === 200 && (await call("GET", "/api/sequences", undefined, bdr)).status === 200);
+  check("BDR cannot upload templates or change the playbook", (await call("POST", "/api/templates", { files: [{ name: "a.txt", content: "Subject: x\n\nbody" }] }, bdr)).status === 403 && (await call("PUT", "/api/playbook", { defaults: { videoType: "rep" } }, bdr)).status === 403);
   check("BDR can read the work queue", (await call("GET", "/api/work/queue", undefined, bdr)).status === 200);
   check("admin can read integration status", (await call("GET", "/api/integrations", undefined, admin)).status === 200);
   const storeTest = await call("POST", "/api/integrations/store/test", {}, admin);

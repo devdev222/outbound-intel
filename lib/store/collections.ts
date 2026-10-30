@@ -1,6 +1,9 @@
 import { getStore } from "@/lib/store";
 import type {
   Assessment,
+  CompanyPlaybook,
+  MessageTemplate,
+  Sequence,
   AuditEntry,
   Conversation,
   Experiment,
@@ -35,6 +38,9 @@ export const gifts = col<Gift>("gifts");
 export const assessments = col<Assessment>("assessments");
 export const suppressions = col<Suppression>("suppressions");
 export const auditLog = col<AuditEntry>("audit");
+export const messageTemplates = col<MessageTemplate>("message_templates");
+export const sequences = col<Sequence>("sequences");
+export const companyPlaybook = col<CompanyPlaybook>("company_playbook");
 const settingsCol = col<PlatformSettings>("settings");
 
 export const DEFAULT_SETTINGS: PlatformSettings = {
@@ -55,6 +61,17 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
     avgOpportunityValue: 120_000,
     meetingHoldRate: 0.7,
   },
+  // One explicit default per setting. The Lab changes these only for enrolled accounts, and a rolled-out winner updates them.
+  defaults: {
+    contentFormat: "landing_page",
+    videoType: "ai",
+    personalization: "deep",
+    angleVariant: "A",
+    gifting: "control",
+    proofMode: "matched",
+    assessmentInvite: false,
+    angleOverride: null,
+  },
   updatedAt: "1970-01-01T00:00:00.000Z",
   updatedBy: "defaults",
 };
@@ -62,15 +79,16 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
 export async function getSettings(): Promise<PlatformSettings> {
   const s = await settingsCol.get("global");
   if (!s) return DEFAULT_SETTINGS;
-  return { ...DEFAULT_SETTINGS, ...s, automation: { ...DEFAULT_SETTINGS.automation, ...s.automation }, economics: { ...DEFAULT_SETTINGS.economics, ...s.economics } };
+  return { ...DEFAULT_SETTINGS, ...s, automation: { ...DEFAULT_SETTINGS.automation, ...s.automation }, economics: { ...DEFAULT_SETTINGS.economics, ...s.economics }, defaults: { ...DEFAULT_SETTINGS.defaults, ...(s.defaults ?? {}) } };
 }
 
-export async function updateSettings(patch: Partial<Pick<PlatformSettings, "automation" | "economics">>, by: string): Promise<PlatformSettings> {
+export async function updateSettings(patch: Partial<Pick<PlatformSettings, "automation" | "economics" | "defaults">>, by: string): Promise<PlatformSettings> {
   const current = await getSettings();
   const next: PlatformSettings = {
     ...current,
     automation: { ...current.automation, ...(patch.automation ?? {}) },
     economics: { ...current.economics, ...(patch.economics ?? {}) },
+    defaults: { ...current.defaults, ...(patch.defaults ?? {}) },
     updatedAt: nowIso(),
     updatedBy: by,
   };

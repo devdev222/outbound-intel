@@ -1,9 +1,10 @@
 import { DEMO_REPS, ensureDemoIdentities } from "@/lib/auth/users";
 import type { Store } from "@/lib/store";
-import { conversations as convCol, experiments as expCol, giftCampaigns as campCol, gifts as giftCol, getSettings } from "@/lib/store/collections";
+import { conversations as convCol, experiments as expCol, giftCampaigns as campCol, gifts as giftCol, getSettings, sequences as seqCol } from "@/lib/store/collections";
 import type { Conversation, ConversationOutcome, Outcome } from "@/lib/types";
 import { makeRng, nowIso, pickOne, uuid } from "@/lib/util";
-import { EXPERIMENT_TEMPLATES, newExperiment } from "./experiments";
+import { buildArms, newExperiment } from "./experiments";
+import { seedContentDemo } from "./seed-content";
 import { newCampaign, proposeGifts } from "./gifting";
 import { ensureProofSeeded } from "./proof";
 import { logActivity } from "./activity";
@@ -17,6 +18,7 @@ import { logActivity } from "./activity";
 export async function seedPlatformDemo(store: Store, seed = 11): Promise<{ conversations: number; outcomes: number; experiments: number }> {
   await ensureDemoIdentities();
   await ensureProofSeeded();
+  await seedContentDemo();
   const settings = await getSettings();
   if ((await convCol.list()).length > 0) return { conversations: 0, outcomes: 0, experiments: 0 };
 
@@ -80,12 +82,15 @@ export async function seedPlatformDemo(store: Store, seed = 11): Promise<{ conve
     await logActivity(store, a.id, "system", "history_seeded", `${n} seeded conversation${n === 1 ? "" : "s"} for the demo`);
   }
 
-  // Experiments: one running angle test (assigns on next campaign launches), one draft.
-  const angle = EXPERIMENT_TEMPLATES[0];
-  const running = newExperiment({ name: angle.name, hypothesis: angle.hypothesis, type: angle.type, segment: { industries: [], sizeBands: [], signalKeys: [], minScore: 60 }, arms: angle.arms, primaryMetric: angle.primaryMetric, createdBy: "seed", status: "running" });
+  // Experiments: one running angle test (assigns on next campaign launches), one draft sequence test.
+  const angle = await buildArms("angle", { angle: "catalog" }, settings.defaults);
+  const running = newExperiment({ name: angle.name, hypothesis: angle.hypothesis, type: "angle", segment: { industries: [], sizeBands: [], signalKeys: [], minScore: 60 }, arms: angle.arms, primaryMetric: "meetings_booked", createdBy: "seed", status: "running" });
   await expCol.put(running);
-  const assess = EXPERIMENT_TEMPLATES[3];
-  await expCol.put(newExperiment({ name: assess.name, hypothesis: assess.hypothesis, type: assess.type, segment: { industries: [], sizeBands: [], signalKeys: [], minScore: 65 }, arms: assess.arms, primaryMetric: assess.primaryMetric, createdBy: "seed" }));
+  const team = (await seqCol.list()).find((x) => x.status === "active");
+  if (team) {
+    const seqArms = await buildArms("sequence", { sequenceIds: [team.id] }, settings.defaults);
+    await expCol.put(newExperiment({ name: seqArms.name, hypothesis: seqArms.hypothesis, type: "sequence", segment: { industries: [], sizeBands: [], signalKeys: [], minScore: 65 }, arms: seqArms.arms, primaryMetric: "meetings_booked", createdBy: "seed" }));
+  }
   // Back-assign running experiment arms to accounts with campaigns so results have samples.
   for (const a of await store.listAccounts()) {
     if (!a.campaign) continue;

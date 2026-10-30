@@ -2,7 +2,7 @@ import Link from "next/link";
 import { RetrainButton } from "@/components/dashboard/RetrainButton";
 import { Badge, ButtonLink, Card, EmptyState, PageHeader, Synthetic, fmtDate } from "@/components/ui";
 import { requireRole } from "@/lib/auth";
-import { EXPERIMENT_TEMPLATES } from "@/lib/engine/experiments";
+import { EXPERIMENT_TYPES, normalizeExperiment } from "@/lib/engine/experiments";
 import { getStore } from "@/lib/store";
 import { experiments as expCol } from "@/lib/store/collections";
 import type { IcpBucket, Weights } from "@/lib/types";
@@ -76,8 +76,8 @@ export default async function IntelligencePage({ searchParams }: { searchParams:
     .filter((x) => x.liveShare > x.histShare * 1.3 && x.liveShare > 0.08)
     .sort((a, b) => b.liveShare - a.liveShare)
     .slice(0, 5);
-  const existingTypes = new Set(experiments.map((e) => e.type));
-  const recommended = EXPERIMENT_TEMPLATES.filter((t) => !existingTypes.has(t.type)).slice(0, 4);
+  const existingTypes = new Set(experiments.map((e) => normalizeExperiment(e).type));
+  const recommended = EXPERIMENT_TYPES.filter((t) => !existingTypes.has(t.type)).slice(0, 4);
   const previous = models.find((m) => m.version === model.version - 1) ?? null;
   const patterns = [...model.signalPatterns].sort((a, b) => b.lift - a.lift);
   const synthetic = accounts.some((a) => a.facts.source === "synthetic");
@@ -173,18 +173,18 @@ export default async function IntelligencePage({ searchParams }: { searchParams:
             <div className="card-hint">Current accounts mirror the historical signal mix.</div>
           )}
         </Card>
-        <Card title="Recommended experiments" hint="Templates not yet running in the Lab" actions={<ButtonLink href="/lab" variant="ghost" className="btn-sm">Open the Lab</ButtonLink>}>
+        <Card title="Questions the Lab has not tested yet" hint="Each one compares a single change against what you do today" actions={<ButtonLink href="/lab" variant="ghost" className="btn-sm">Open the Lab</ButtonLink>}>
           {recommended.length ? (
             <ul className="divide-y divide-[var(--border)]">
               {recommended.map((t) => (
                 <li key={t.type} className="py-2 text-[13px]">
-                  <div className="font-medium">{t.name}</div>
-                  <div className="card-hint">{t.hypothesis}</div>
+                  <div className="font-medium">{t.label}</div>
+                  <div className="card-hint">{t.question}</div>
                 </li>
               ))}
             </ul>
           ) : (
-            <div className="card-hint">Every template type already has an experiment.</div>
+            <div className="card-hint">Every kind of experiment has been tried at least once.</div>
           )}
         </Card>
       </div>

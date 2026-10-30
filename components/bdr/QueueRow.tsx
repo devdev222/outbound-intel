@@ -106,6 +106,17 @@ export function QueueRow({ item }: { item: QueueItem }) {
                 {item.proof.customer}: {item.proof.line} {item.proof.placeholder && <Badge tone="warn">placeholder</Badge>}
               </Field>
             )}
+            {item.objections.length > 0 && (
+              <Field label="If they say…">
+                <ul className="space-y-1">
+                  {item.objections.map((o) => (
+                    <li key={o.objection}>
+                      <span className="font-medium">“{o.objection}”</span> <span className="text-[var(--text-2)]">{o.response}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Field>
+            )}
             <Field label="Last interaction">{item.lastInteraction ? `${fmtAgo(item.lastInteraction.at)} · ${item.lastInteraction.summary}` : "None yet"}</Field>
           </div>
           <div className="space-y-2">

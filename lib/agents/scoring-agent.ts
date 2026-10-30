@@ -2,6 +2,7 @@ import { z } from "zod";
 import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
 import { angleFor } from "@/lib/engine/campaign";
+import { getPlaybook } from "@/lib/engine/playbook";
 import { computeScores, priorityFrom } from "@/lib/engine/scoring";
 import { accountPipelineValue } from "@/lib/engine/capacity";
 import { assignOwner, evaluateReadiness, nextActionFor, readinessContextFor } from "@/lib/engine/readiness";
@@ -67,7 +68,7 @@ async function scoreAccount(account: Account, ctx: AgentContext, explainWithLlm:
   const priority = priorityFrom(scores.total, account.engagementScore);
   const verified = account.signals.filter((s) => s.status === "verified").map((s) => s.label);
   const hypotheses = account.signals.filter((s) => s.status === "hypothesis").map((s) => s.label);
-  const defaultAngle = angleFor(account, ctx.model, "A");
+  const defaultAngle = angleFor(account, ctx.model, "A", await getPlaybook());
 
   let explanation = templateExplanation(account, scores, ctx.model);
   let painHypothesis = account.painHypothesis ?? templatePain(account);

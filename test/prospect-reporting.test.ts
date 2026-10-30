@@ -94,7 +94,7 @@ describe("opportunity reporting", () => {
     const exp = newExperiment({
       name: "Angle test",
       hypothesis: "B beats A",
-      type: "email",
+      type: "angle",
       segment: { industries: [], sizeBands: [], signalKeys: [], minScore: 0 },
       arms: [
         { key: "a", name: "Control", share: 0.5, config: { angleVariant: "A" }, control: true },

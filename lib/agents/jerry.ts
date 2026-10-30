@@ -7,6 +7,7 @@ import { describeEvent } from "@/lib/engine/engagement";
 import { enrichAccountContact, enrichmentDue } from "@/lib/engine/enrichment";
 import { runOperation } from "@/lib/engine/operations";
 import { adaptNextTouch } from "@/lib/engine/outreach";
+import { getPlaybook, playbookPrompt } from "@/lib/engine/playbook";
 import { generateStructured } from "@/lib/llm";
 import type { Account, Alert, CallQueueItem, Delivery, HotLeadAlert, Person } from "@/lib/types";
 import { hash32, nowIso } from "@/lib/util";
@@ -126,13 +127,15 @@ async function buildPayload(account: Account, ctx: AgentContext): Promise<{ payl
     enrichmentLines.push(...remoteTrack.notes);
   } else {
     const knowledge = await loadJerryKnowledge();
+    const team = playbookPrompt(await getPlaybook(), { signalKey: account.signals.find((x) => x.status === "verified" && x.type !== "intent")?.key, contactTitle: contact?.title, objections: true });
     const r = await generateStructured({
       schema: TalkTrackSchema,
       effort: "low",
       system:
         `You are Jerry, ${config.brandName}'s sales-intelligence agent. You brief reps right before they call a prospect who just engaged with personalized content. ` +
         "Use the knowledge base below for voice, offer and objection handling. Ground every claim in the engagement and signals provided; never invent prospect facts or customer results.\n\n" +
-        `# Knowledge base\n${knowledge}`,
+        `# Knowledge base\n${knowledge}` +
+        (team ? `\n\n# ${team}` : ""),
       user:
         `Prospect: ${account.companyName} (${account.industry}, ${account.employeeCount} employees, ${account.hqCity}, ${account.hqState}).\n` +
         `Contact: ${contact ? `${contact.name}, ${contact.title}${contact.phone ? `, phone ${contact.phoneVerified && contact.verifiedBy !== "synthetic" ? "verified" : "unverified"}` : ", no phone"}` : "none"}.\n` +

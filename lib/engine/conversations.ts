@@ -9,6 +9,7 @@ import { nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
 import { recordOutcome } from "./outcomes";
 import { pauseAccount } from "./pause";
+import { getPlaybook, matchingObjections, playbookPrompt } from "./playbook";
 import { approveTask, createTask, providerCanSend } from "./tasks";
 import { SIGNAL_CATALOG } from "./signal-catalog";
 
@@ -112,14 +113,20 @@ function templateIntel(account: Account, input: LogConversationInput) {
 
 export async function logConversation(store: Store, providers: Providers, account: Account, input: LogConversationInput, user: User | null): Promise<Conversation> {
   const settings = await getSettings();
+  const playbook = await getPlaybook();
   const template = templateIntel(account, input);
+  // Without Claude, answer objections the notes mention with your playbook's responses.
+  const answers = matchingObjections(playbook, input.notes);
+  if (answers.length) template.followUp = { ...template.followUp, body: `${template.followUp.body}\n\n${answers.map((o) => o.response).join("\n\n")}` };
+  const team = playbookPrompt(playbook, { contactTitle: account.contact?.title, objections: true });
   let intel: { summary: string; objections: string[]; signalKeys: string[]; followUp: { subject: string; body: string }; nextAction: NextAction; generatedBy: "llm" | "template" } = { ...template, generatedBy: "template" };
 
   const r = await generateStructured({
     schema: Schema,
     effort: "low",
     system:
-      `You are the conversation intelligence layer for ${config.brandName}'s outbound team. From a rep's notes you produce a crisp summary, the objections, the buying signals the conversation confirmed (only keys from the catalog), a follow-up the rep can send as-is, and the next action. Ground everything in the notes; never invent facts about the prospect.`,
+      `You are the conversation intelligence layer for ${config.brandName}'s outbound team. From a rep's notes you produce a crisp summary, the objections, the buying signals the conversation confirmed (only keys from the catalog), a follow-up the rep can send as-is, and the next action. Ground everything in the notes; never invent facts about the prospect.` +
+      (team ? `\n\n${team}` : ""),
     user:
       `Account: ${account.companyName} (${account.industry}). Contact: ${account.contact ? `${account.contact.name}, ${account.contact.title}` : "unknown"}.\n` +
       `Channel: ${input.channel}. Outcome: ${input.outcome}.\nNotes: ${input.notes || "(none)"}\n` +

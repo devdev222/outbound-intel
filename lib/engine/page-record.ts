@@ -1,7 +1,9 @@
 import { getOrBootstrapModel } from "@/lib/agents/runtime";
 import { config } from "@/lib/config";
 import { type PageIndustryTag, type PageWorkflowTag } from "@/lib/content/case-studies";
-import { assignArms, roiDefaultsFor, templateCopy } from "@/lib/engine/campaign";
+import { campaignArms, roiDefaultsFor, templateCopy } from "@/lib/engine/campaign";
+import { getPlaybook } from "@/lib/engine/playbook";
+import { getSettings } from "@/lib/store/collections";
 import { getStore } from "@/lib/store";
 import type { Account, ScoringModel, Signal } from "@/lib/types";
 import { pageTokenFor } from "@/lib/util";
@@ -316,7 +318,7 @@ export async function pageRecordFor(account: Account, opts: { model?: ScoringMod
 
   if (!account.campaign) {
     const model = opts.model ?? (await getOrBootstrapModel(getStore()));
-    const copy = templateCopy(account, model, assignArms(account.id));
+    const copy = templateCopy(account, model, campaignArms((await getSettings()).defaults, {}), null, await getPlaybook());
     headline = copy.headline;
     valueProposition = copy.subheadline;
     repMessage = copy.videoScript;

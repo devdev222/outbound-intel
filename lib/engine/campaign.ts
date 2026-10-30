@@ -3,12 +3,15 @@ import { allowPlaceholders, config } from "@/lib/config";
 import { generateStructured } from "@/lib/llm";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
-import { proofStories } from "@/lib/store/collections";
-import type { Account, Campaign, ExperimentArms, OutreachTouch, ProofStory, RoiDefaults, ScoringModel, Signal } from "@/lib/types";
-import { hash32, nowIso, pageTokenFor, uuid } from "@/lib/util";
+import { getSettings, proofStories, reps as repCol } from "@/lib/store/collections";
+import type { Account, Campaign, CampaignDefaults, CompanyPlaybook, ExperimentArms, MessageTemplate, OutreachTouch, ProofStory, RoiDefaults, ScoringModel, Sequence, Signal } from "@/lib/types";
+import { nowIso, pageTokenFor, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
 import { applyExperiments } from "./experiments";
 import { runOperation } from "./operations";
+import { getPlaybook, playbookAngle, playbookPrompt } from "./playbook";
+import { BUILTIN_SEQUENCE, loadSequencePlan } from "./sequences";
+import { assessmentUrlFor, bookingUrlFor, renderTemplate, templateContext } from "./templates";
 import { ensureProofSeeded, rankProof } from "./proof";
 import { SIGNAL_BY_KEY, signalLabel } from "./signal-catalog";
 
@@ -26,15 +29,14 @@ export function pageUrlFor(account: Pick<Account, "id" | "slug">): string {
 
 // --- Experiments ---------------------------------------------------------------
 
-export function assignArms(accountId: string): ExperimentArms {
-  const h = hash32(accountId);
-  return {
-    contentFormat: h & 1 ? "landing_page" : "direct_link",
-    videoType: (h >>> 1) & 1 ? "ai" : "rep",
-    personalization: (h >>> 2) & 1 ? "deep" : "conventional",
-    angleVariant: (h >>> 3) & 1 ? "A" : "B",
-    gifting: (h >>> 4) % 4 === 0 ? "gift" : "control",
-  };
+/**
+ * Campaign settings for one account: the team's defaults (Playbook > Campaign
+ * defaults), then the configuration of every Lab arm the account is enrolled
+ * in. Nothing is randomized outside an experiment, so experiments never
+ * confound each other or the baseline.
+ */
+export function campaignArms(defaults: CampaignDefaults, overrides: Partial<ExperimentArms>): ExperimentArms {
+  return { ...defaults, ...overrides };
 }
 
 // --- Content ---------------------------------------------------------------------
@@ -44,13 +46,20 @@ export function topSignal(account: Account): Signal | null {
   return [...account.signals].filter((s) => s.type !== "intent").sort((a, b) => order(b) - order(a))[0] ?? null;
 }
 
-export function angleFor(account: Account, model: ScoringModel, variant: "A" | "B"): string {
+/**
+ * Messaging angle. An explicit override (angle experiment arm or a rolled-out
+ * winner) wins; variant A is your playbook's angle for the top signal, then the
+ * learned one, then the catalog's; variant B is the catalog alternative.
+ */
+export function angleFor(account: Account, model: ScoringModel, variant: "A" | "B", playbook: CompanyPlaybook | null = null, override: string | null = null): string {
+  if (override?.trim()) return override.trim();
   const sig = topSignal(account);
   if (!sig) return "Scale shipping operations without scaling coordination headcount";
+  const mine = playbookAngle(playbook, sig.key);
   const learned = model.playbook.angles.find((a) => a.signalKey === sig.key)?.angle;
   const def = SIGNAL_BY_KEY[sig.key]?.angles;
-  if (variant === "A") return learned ?? def?.[0] ?? `Lead with ${sig.label.toLowerCase()}`;
-  return def?.[1] ?? learned ?? `Lead with ${sig.label.toLowerCase()}`;
+  if (variant === "A") return mine ?? learned ?? def?.[0] ?? `Lead with ${sig.label.toLowerCase()}`;
+  return def?.[1] ?? learned ?? mine ?? `Lead with ${sig.label.toLowerCase()}`;
 }
 
 export function roiDefaultsFor(account: Account): RoiDefaults {
@@ -126,8 +135,10 @@ export interface ProofLine {
   placeholder: boolean;
 }
 
-export function proofLineFor(account: Account, stories: ProofStory[]): ProofLine | null {
-  for (const match of rankProof(account, stories, { allowPlaceholders: allowPlaceholders() })) {
+export function proofLineFor(account: Account, stories: ProofStory[], mode: "matched" | "generic" | "none" = "matched"): ProofLine | null {
+  if (mode === "none") return null;
+  const pool = mode === "generic" ? stories.filter((st) => st.industry === "General") : stories;
+  for (const match of rankProof(account, pool, { allowPlaceholders: allowPlaceholders() })) {
     const story = match.story;
     const outcome = story.approved && !story.placeholder ? story.outcomes.find((o) => o.verified) : allowPlaceholders() && story.placeholder ? story.outcomes[0] : undefined;
     if (!outcome) continue;
@@ -145,9 +156,9 @@ export function proofLineFor(account: Account, stories: ProofStory[]): ProofLine
   return null;
 }
 
-export async function loadProofLine(account: Account): Promise<ProofLine | null> {
+export async function loadProofLine(account: Account, mode: "matched" | "generic" | "none" = account.campaign?.arms.proofMode ?? "matched"): Promise<ProofLine | null> {
   const stories = await ensureProofSeeded();
-  return proofLineFor(account, stories.length ? stories : await proofStories.list());
+  return proofLineFor(account, stories.length ? stories : await proofStories.list(), mode);
 }
 
 /** Back-compat for callers that only need the sentence. */
@@ -164,9 +175,9 @@ export interface CampaignCopy {
   generatedBy: "llm" | "template";
 }
 
-export function templateCopy(account: Account, model: ScoringModel, arms: ExperimentArms, proof: ProofLine | null = null): CampaignCopy {
+export function templateCopy(account: Account, model: ScoringModel, arms: ExperimentArms, proof: ProofLine | null = null, playbook: CompanyPlaybook | null = null): CampaignCopy {
   const sig = topSignal(account);
-  const angle = angleFor(account, model, arms.angleVariant);
+  const angle = angleFor(account, model, arms.angleVariant, playbook, arms.angleOverride ?? null);
   const roi = roiDefaultsFor(account);
   const brand = config.brandName;
   const deep = arms.personalization === "deep";
@@ -194,8 +205,8 @@ const CopySchema = z.object({
   emailBody: z.string().describe("4-6 short lines, plain text, includes the literal token {{page_url}} once"),
 });
 
-export async function generateCopy(account: Account, model: ScoringModel, arms: ExperimentArms, proof: ProofLine | null = null): Promise<CampaignCopy> {
-  const template = templateCopy(account, model, arms, proof);
+export async function generateCopy(account: Account, model: ScoringModel, arms: ExperimentArms, proof: ProofLine | null = null, playbook: CompanyPlaybook | null = null): Promise<CampaignCopy> {
+  const template = templateCopy(account, model, arms, proof, playbook);
   if (arms.personalization !== "deep") return template;
   const sig = topSignal(account);
   const result = await generateStructured({
@@ -205,13 +216,14 @@ export async function generateCopy(account: Account, model: ScoringModel, arms: 
       `You are the campaign agent for ${config.brandName}, a managed transportation provider for shippers. ` +
       "You write short, specific, non-hypey outbound copy grounded only in the evidence provided. Never invent facts about the prospect. " +
       "Cite a customer result ONLY if one is provided below, exactly as given; otherwise make no customer claims or numbers. " +
-      "Tone: a sharp operator writing to a peer. No exclamation marks.",
+      "Tone: a sharp operator writing to a peer. No exclamation marks." +
+      (playbookPrompt(playbook, { signalKey: sig?.key, contactTitle: account.contact?.title }) ? `\n\n${playbookPrompt(playbook, { signalKey: sig?.key, contactTitle: account.contact?.title })}` : ""),
     user:
       `Account: ${account.companyName} (${account.industry}, ${account.employeeCount} employees, ${account.hqCity}, ${account.hqState}).\n` +
       `Contact: ${account.contact ? `${account.contact.name}, ${account.contact.title}` : "unknown"}.\n` +
       `Top signal: ${sig ? `${sig.label} (${sig.status}); evidence: ${sig.evidence.map((e) => e.title).join("; ")}` : "none"}.\n` +
       `Other signals: ${account.signals.filter((s) => s !== sig).map((s) => s.label).join("; ") || "none"}.\n` +
-      `Messaging angle to use: ${angleFor(account, model, arms.angleVariant)}.\n` +
+      `Messaging angle to use: ${angleFor(account, model, arms.angleVariant, playbook, arms.angleOverride ?? null)}.\n` +
       `Pain hypothesis: ${account.painHypothesis ?? "n/a"}.\n` +
       `ROI defaults: ${JSON.stringify(roiDefaultsFor(account))}.\n` +
       `Customer proof you may cite (verbatim, or omit): ${proof ? `"${proof.title}": ${proof.value} ${proof.metric}` : "NONE - do not mention any customer result"}.\n` +
@@ -223,84 +235,113 @@ export async function generateCopy(account: Account, model: ScoringModel, arms: 
 
 // --- Outreach sequence -------------------------------------------------------------
 
-export function buildTouches(account: Account, campaign: Campaign, copy: CampaignCopy, proof: ProofLine | null = null): OutreachTouch[] {
+export interface TouchPlan {
+  sequence: Sequence;
+  templates: Map<string, MessageTemplate>;
+  skipped: { step: number; reason: string }[];
+  repName?: string | null;
+}
+
+/** Engine-written content for a step, by channel and position among the sequence's emails. */
+function engineStep(
+  channel: Sequence["steps"][number]["channel"],
+  emailIndex: number,
+  emailCount: number,
+  c: { account: Account; campaign: Campaign; copy: CampaignCopy; proof: ProofLine | null; link: string; direct: boolean },
+): { subject?: string; body: string } {
+  const name = firstName(c.account);
+  const phrase = signalPhrase(topSignal(c.account), c.account);
+  const sub = c.copy.emailSubject;
+  switch (channel) {
+    case "email":
+      if (emailIndex === 0) {
+        if (c.direct) return { subject: sub, body: `${name},\n\nSaw ${phrase} at ${c.account.companyName}. ${c.campaign.angle}.\n\nIf it is worth 15 minutes, pick a time here: ${c.link}` };
+        return { subject: sub, body: c.copy.emailBody.split("{{page_url}}").join(c.link) };
+      }
+      if (emailIndex === emailCount - 1 && emailCount > 1) return { subject: `Closing the loop, ${c.account.companyName}`, body: `${name}, I will stop here. If ${phrase} becomes a priority, ${c.direct ? "my calendar stays open" : "the page stays live"}: ${c.link}` };
+      return {
+        subject: `Re: ${sub}`,
+        body: c.proof
+          ? `${name}, one more data point: "${c.proof.title}" (${c.proof.value} ${c.proof.metric.toLowerCase()}).\n\n${c.direct ? "Happy to walk through it" : "The page has the full story and your ROI estimate"}: ${c.link}`
+          : `${name}, ${c.direct ? "happy to walk through the numbers we could see publicly" : "the page has your ROI estimate, built from the numbers we could see publicly"}: ${c.link}\n\nHappy to walk through the assumptions on a short call.`,
+      };
+    case "linkedin":
+      return { body: `${name}, sent you a short note on ${phrase}. Would value connecting either way.` };
+    case "inmail":
+      return { body: `${name}, in case email is noisy: ${c.direct ? "15 minutes on" : "20-second note and your numbers on"} ${phrase} here: ${c.link}. Happy to send a calendar link.` };
+    case "call":
+      return { body: `Call ${name} about ${phrase}. Open with: ${c.campaign.angle}.${c.proof ? `\nProof to cite: ${c.proof.sentence}` : ""}\nPage: ${c.campaign.pageUrl}` };
+    case "gift":
+      return { body: "Send the gift after the first meaningful engagement (tracked separately for ROI)." };
+    default:
+      return { body: "" };
+  }
+}
+
+/**
+ * Turn the resolved sequence into tasks. Steps with one of your templates are
+ * rendered with the account's variables; steps without one (or whose template
+ * cannot be used) are written by the engine. Day offsets start after any pause.
+ */
+export function buildTouches(account: Account, campaign: Campaign, copy: CampaignCopy, proof: ProofLine | null = null, plan?: TouchPlan): OutreachTouch[] {
   const base = Date.now();
   // A paused account's sequence starts when the pause ends.
   const start = account.pausedUntil && account.pausedUntil > new Date(base).toISOString() ? new Date(account.pausedUntil).getTime() : base;
   const at = (days: number) => new Date(start + days * 86_400_000).toISOString();
-  const page = campaign.pageUrl;
-  const name = firstName(account);
-  const touches: OutreachTouch[] = [
-    {
+  const arms = campaign.arms;
+  const direct = arms.contentFormat === "direct_link";
+  const link = direct ? bookingUrlFor(account) : campaign.pageUrl;
+  const sequence = plan?.sequence ?? BUILTIN_SEQUENCE;
+  const emailSteps = sequence.steps.map((st, i) => (st.channel === "email" ? i : -1)).filter((i) => i >= 0);
+  const firstEmail = emailSteps[0] ?? -1;
+  const ctx = templateContext({ account, signal: signalPhrase(topSignal(account), account), angle: campaign.angle, proof: proof?.sentence ?? "", pageUrl: link, repName: plan?.repName, shipmentsPerMonth: campaign.roiDefaults.shipmentsPerMonth });
+  const skipped = new Map((plan?.skipped ?? []).map((x) => [x.step, x.reason]));
+
+  const touches: OutreachTouch[] = sequence.steps.map((step, i) => {
+    const n = i + 1;
+    const tpl = step.templateId ? plan?.templates.get(step.templateId) : undefined;
+    let subject: string | undefined;
+    let body: string;
+    let note: string | undefined;
+    if (tpl) {
+      const r = renderTemplate(tpl, ctx);
+      subject = r.subject ?? undefined;
+      body = r.body;
+      note = `from template "${tpl.name}"`;
+    } else {
+      const e = engineStep(step.channel, emailSteps.indexOf(i), emailSteps.length, { account, campaign, copy, proof, link, direct });
+      subject = e.subject;
+      body = e.body;
+      if (skipped.has(n)) note = `${skipped.get(n)}; the engine wrote this step`;
+    }
+    if (i === firstEmail) {
+      if (arms.assessmentInvite && !body.includes("/assess/")) body += `\n\nIf it helps to see the numbers first, here is a 3-minute freight operations assessment for ${account.companyName}: ${assessmentUrlFor(account)}`;
+      if (!direct && campaign.videoThumbnailUrl) body += `\n\n[video thumbnail -> ${campaign.pageUrl}#video]`;
+    }
+    return {
       id: uuid(),
       accountId: account.id,
-      channel: "email",
-      step: 1,
-      subject: copy.emailSubject,
-      body: copy.emailBody.replace("{{page_url}}", page) + (campaign.videoThumbnailUrl ? `\n\n[video thumbnail -> ${page}#video]` : ""),
+      channel: step.channel,
+      step: n,
+      subject,
+      body,
       status: "scheduled",
-      scheduledFor: at(0),
+      scheduledFor: at(step.day),
       provider: "pending",
-    },
-    {
-      id: uuid(),
-      accountId: account.id,
-      channel: "linkedin",
-      step: 2,
-      body: `${name}, sent you a short note on ${signalPhrase(topSignal(account), account)}. Would value connecting either way.`,
-      status: "scheduled",
-      scheduledFor: at(1),
-      provider: "pending",
-    },
-    {
-      id: uuid(),
-      accountId: account.id,
-      channel: "email",
-      step: 3,
-      subject: `Re: ${copy.emailSubject}`,
-      body: proof
-        ? `${name}, one more data point: "${proof.title}" (${proof.value} ${proof.metric.toLowerCase()}).\n\nThe page has the full story and your ROI estimate: ${page}`
-        : `${name}, the page has your ROI estimate, built from the numbers we could see publicly: ${page}\n\nHappy to walk through the assumptions on a short call.`,
-      status: "scheduled",
-      scheduledFor: at(4),
-      provider: "pending",
-    },
-    {
-      id: uuid(),
-      accountId: account.id,
-      channel: "inmail",
-      step: 4,
-      body: `${name}, in case email is noisy: 20-second note and your numbers here: ${page}. Happy to send a calendar link.`,
-      status: "scheduled",
-      scheduledFor: at(6),
-      provider: "pending",
-    },
-    {
-      id: uuid(),
-      accountId: account.id,
-      channel: "email",
-      step: 5,
-      subject: `Closing the loop, ${account.companyName}`,
-      body: `${name}, I will stop here. If ${signalPhrase(topSignal(account), account)} becomes a priority, the page stays live: ${page}`,
-      status: "scheduled",
-      scheduledFor: at(10),
-      provider: "pending",
-    },
-  ];
-  const titles: Record<number, string> = { 1: "Intro email", 2: "LinkedIn connection note", 3: "Follow-up email", 4: "InMail", 5: "Break-up email", 6: "Gift" };
-  for (const t of touches) {
-    t.source = "sequence";
-    t.title = titles[t.step] ?? `Step ${t.step}`;
-    t.assigneeRepId = account.ownerRepId ?? null;
-    t.attempts = 0;
-  }
-  if (campaign.arms.gifting === "gift") {
+      note,
+      source: "sequence",
+      title: step.title,
+      assigneeRepId: account.ownerRepId ?? null,
+      attempts: 0,
+    };
+  });
+  if (arms.gifting === "gift" && !sequence.steps.some((st) => st.channel === "gift")) {
     touches.push({
       id: uuid(),
       accountId: account.id,
       channel: "gift",
-      step: 6,
-      body: `Gift experiment: send after first meaningful engagement (tracked separately for ROI).`,
+      step: touches.length + 1,
+      body: "Gift experiment: send after the first meaningful engagement (tracked separately for ROI).",
       status: "scheduled",
       scheduledFor: at(3),
       provider: "pending",
@@ -325,12 +366,14 @@ export async function launchCampaign(
   account: Account,
   ctx: { store: Store; providers: Providers; model: ScoringModel; log?: (s: string) => void },
 ): Promise<Account> {
-  // Default arms, then the configuration of whichever Lab arm (control or treatment) the account is in.
-  const { assignments, overrides } = await applyExperiments(account);
-  const arms: ExperimentArms = { ...assignArms(account.id), ...(overrides as Partial<ExperimentArms>) };
+  // Team defaults, then the configuration of whichever Lab arms (control or treatment) the account is in.
+  const [{ assignments, overrides }, settings, playbook] = await Promise.all([applyExperiments(account), getSettings(), getPlaybook()]);
+  const arms = campaignArms(settings.defaults, overrides as Partial<ExperimentArms>);
   account = { ...account, experiments: assignments };
-  const proof = await loadProofLine(account);
-  const copy = await generateCopy(account, ctx.model, arms, proof);
+  const proof = await loadProofLine(account, arms.proofMode ?? "matched");
+  const copy = await generateCopy(account, ctx.model, arms, proof, playbook);
+  const plan = await loadSequencePlan(account, arms);
+  const repName = account.ownerRepId ? ((await repCol.get(account.ownerRepId))?.name ?? null) : null;
   const pageUrl = pageUrlFor(account);
   const roi = roiDefaultsFor(account);
 
@@ -338,7 +381,7 @@ export async function launchCampaign(
   const campaign: Campaign = {
     headline: copy.headline,
     subheadline: copy.subheadline,
-    angle: angleFor(account, ctx.model, arms.angleVariant),
+    angle: angleFor(account, ctx.model, arms.angleVariant, playbook, arms.angleOverride ?? null),
     persona: account.recommendedPersona ?? account.contact?.title ?? "VP of Transportation",
     videoScript: copy.videoScript,
     videoStatus: "pending",
@@ -354,9 +397,14 @@ export async function launchCampaign(
     launchState: "pending",
     launchError: null,
     sequenceId: null,
+    sequence: { id: plan.sequence.id, name: plan.sequence.name },
   };
 
-  await ctx.store.insertOutreach(buildTouches(account, campaign, copy, proof));
+  await ctx.store.insertOutreach(buildTouches(account, campaign, copy, proof, { ...plan, repName }));
+  await logActivity(ctx.store, account.id, "campaign", "sequence_selected", `Sequence "${plan.sequence.name}" (${plan.reason})`, [
+    ...plan.skipped.map((x) => `step ${x.step}: ${x.reason}; the engine wrote it instead`),
+    ...Object.entries(assignments).map(([exp, arm]) => `Lab: experiment ${exp.slice(0, 8)} arm ${arm}`),
+  ]);
   const prepared: Account = { ...account, campaign, messagingAngle: account.messagingAngle ?? campaign.angle };
   return attemptLaunch(ctx.store, ctx.providers, prepared, ctx.log);
 }
@@ -390,4 +438,57 @@ export async function attemptLaunch(store: Store, providers: Providers, account:
     // Never "campaign_live" without an acknowledged launch.
     status: account.status === "campaign_live" ? "qualified" : account.status,
   };
+}
+
+// --- Preview (no side effects) --------------------------------------------------------
+
+export interface PreviewStep {
+  step: number;
+  day: number;
+  channel: OutreachTouch["channel"];
+  title: string;
+  subject: string | null;
+  body: string;
+  source: string;
+}
+
+/**
+ * Render a sequence for one account exactly as a launch would (minus Claude,
+ * so it is instant and free), without writing anything. Draft templates are
+ * shown so the team can review them before approving.
+ */
+export async function previewSequence(account: Account, sequence: Sequence, model: ScoringModel): Promise<PreviewStep[]> {
+  const [settings, playbook, all] = await Promise.all([getSettings(), getPlaybook(), import("@/lib/store/collections").then((m) => m.messageTemplates.list())]);
+  const arms = campaignArms(settings.defaults, {});
+  const proof = await loadProofLine(account, arms.proofMode ?? "matched");
+  const copy = templateCopy(account, model, arms, proof, playbook);
+  const templates = new Map(all.filter((t) => t.status !== "archived").map((t) => [t.id, t]));
+  const campaign: Campaign = {
+    headline: copy.headline,
+    subheadline: copy.subheadline,
+    angle: angleFor(account, model, arms.angleVariant, playbook, arms.angleOverride ?? null),
+    persona: account.contact?.title ?? "",
+    videoScript: copy.videoScript,
+    videoStatus: "pending",
+    roiDefaults: roiDefaultsFor(account),
+    caseStudyId: proof?.storyId ?? "none",
+    pageUrl: pageUrlFor(account),
+    arms,
+    launchedAt: nowIso(),
+  };
+  const repName = account.ownerRepId ? ((await repCol.get(account.ownerRepId))?.name ?? null) : null;
+  const touches = buildTouches({ ...account, pausedUntil: null }, campaign, copy, proof, { sequence, templates, skipped: [], repName });
+  return touches.map((t, i) => {
+    const st = sequence.steps[i];
+    const tpl = st?.templateId ? templates.get(st.templateId) : undefined;
+    return {
+      step: t.step,
+      day: st?.day ?? 3,
+      channel: t.channel,
+      title: t.title ?? `Step ${t.step}`,
+      subject: t.subject ?? null,
+      body: t.body,
+      source: tpl ? `template "${tpl.name}"${tpl.status === "approved" ? "" : " (draft)"}` : st?.templateId ? "template missing: engine copy" : "engine-written",
+    };
+  });
 }

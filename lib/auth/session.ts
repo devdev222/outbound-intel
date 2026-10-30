@@ -88,6 +88,8 @@ export const ROUTE_ROLES: { prefix: string; roles: Role[] }[] = [
   { prefix: "/pipeline", roles: ["exec", "admin"] },
   { prefix: "/intelligence", roles: ["exec", "admin"] },
   { prefix: "/lab", roles: ["exec", "admin"] },
+  // BDRs can read the playbook, sequences and templates; edits are exec/admin (enforced by the API).
+  { prefix: "/playbook", roles: ["bdr", "exec", "admin"] },
   { prefix: "/gifting", roles: ["exec", "admin"] },
   { prefix: "/capacity", roles: ["exec", "admin"] },
   { prefix: "/work", roles: ["bdr", "exec", "admin"] },
