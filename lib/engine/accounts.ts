@@ -1,14 +1,18 @@
 import type { Account, CompanyFacts } from "@/lib/types";
-import { nowIso, slugify, uuid } from "@/lib/util";
+import { deterministicUuid, nowIso, slugify, uuid } from "@/lib/util";
 
-/** Create a fresh account from discovery output. */
+/**
+ * Create a fresh account from discovery output. Synthetic companies get a
+ * deterministic id (from their domain) so page tokens are stable across
+ * ephemeral instances; real discoveries get a random id.
+ */
 export function accountFromFacts(facts: CompanyFacts, existingSlugs: Set<string> = new Set()): Account {
   let slug = slugify(facts.companyName);
   let i = 2;
   while (existingSlugs.has(slug)) slug = `${slugify(facts.companyName)}-${i++}`;
   const ts = nowIso();
   return {
-    id: uuid(),
+    id: facts.source === "synthetic" ? deterministicUuid(`synthetic:${facts.domain}`) : uuid(),
     slug,
     companyName: facts.companyName,
     domain: facts.domain,

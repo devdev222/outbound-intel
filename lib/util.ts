@@ -1,7 +1,17 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export function uuid(): string {
   return randomUUID();
+}
+
+/**
+ * Stable UUID derived from a key (SHA-1, formatted as a v5-style UUID). Used for
+ * synthetic accounts so ids, and therefore page tokens, are identical across
+ * ephemeral instances that each seed themselves.
+ */
+export function deterministicUuid(key: string): string {
+  const h = createHash("sha1").update(key).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${((parseInt(h.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0")}${h.slice(18, 20)}-${h.slice(20, 32)}`;
 }
 
 export function nowIso(): string {
