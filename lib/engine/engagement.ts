@@ -3,6 +3,7 @@ import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
 import type { Account, EngagementEvent, Signal } from "@/lib/types";
 import { clamp, nowIso, uuid } from "@/lib/util";
+import { logActivity } from "./activity";
 import { priorityFrom } from "./scoring";
 
 /**
@@ -29,12 +30,19 @@ export const EVENT_WEIGHTS: Record<string, number> = {
   pricing_viewed: 10,
   booking_clicked: 20,
   return_visit_24h: 12,
+  email_sent: 0,
+  email_delivered: 0,
   email_open: 2,
   email_click: 5,
   email_reply: 15,
+  email_bounced: 0,
+  linkedin_sent: 0,
   linkedin_accept: 4,
   linkedin_reply: 12,
+  gift_sent: 0,
   visitor_identified: 6,
+  estimate_submitted: 18,
+  meeting_canceled: 0,
 };
 
 export const HIGH_INTENT_EVENTS = new Set([
@@ -47,6 +55,7 @@ export const HIGH_INTENT_EVENTS = new Set([
   "booking_clicked",
   "email_reply",
   "linkedin_reply",
+  "estimate_submitted",
 ]);
 
 export function isHighIntentEvent(eventType: string): boolean {
@@ -86,16 +95,30 @@ export function describeEvent(e: Pick<EngagementEvent, "eventType" | "properties
       return "Clicked to book a meeting";
     case "return_visit_24h":
       return `${String(p.visitNumber ?? "Repeat")} visit in 24 hours`;
+    case "email_sent":
+      return `Email step ${String(p.step ?? "")} sent${p.provider ? ` via ${String(p.provider)}` : ""}`;
+    case "email_delivered":
+      return `Email step ${String(p.step ?? "")} delivered`;
     case "email_open":
       return `Opened email step ${String(p.step ?? "")}`;
     case "email_click":
-      return `Clicked link in email step ${String(p.step ?? "")}`;
+      return `Clicked link in email step ${String(p.step ?? "")}${p.link ? ` (${String(p.link)})` : ""}`;
     case "email_reply":
       return "Replied to email";
+    case "email_bounced":
+      return `Email step ${String(p.step ?? "")} bounced`;
+    case "linkedin_sent":
+      return `${p.channel === "inmail" ? "InMail" : "LinkedIn message"} sent by rep`;
     case "linkedin_accept":
       return "Accepted LinkedIn connection";
     case "linkedin_reply":
       return "Replied on LinkedIn";
+    case "gift_sent":
+      return "Gift sent by rep";
+    case "estimate_submitted":
+      return `Requested their estimate by email${p.email ? ` (${String(p.email)})` : ""}`;
+    case "meeting_canceled":
+      return "Meeting canceled";
     case "visitor_identified":
       return `Website visitor identified: ${String(p.name ?? "")}${p.title ? `, ${String(p.title)}` : ""}`;
     default:
@@ -220,5 +243,11 @@ export async function recordEngagement(
   }
 
   next = await store.upsertAccount(next);
+  if (activationTriggered) {
+    await logActivity(store, next.id, "system", "activation_flagged", `Engagement crossed the threshold: ${reason}`, [
+      `engagement ${account.engagementScore} -> ${next.engagementScore}, priority ${account.priority} -> ${next.priority}`,
+      "handed to Jerry",
+    ]);
+  }
   return { account: next, events, activationTriggered, reason };
 }

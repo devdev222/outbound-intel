@@ -2,6 +2,7 @@ import { z } from "zod";
 import { runAgent } from "@/lib/agents/runtime";
 import { json, readJson, requireAccount } from "@/lib/api";
 import { recordEngagement } from "@/lib/engine/engagement";
+import { createEstimateTask } from "@/lib/engine/outreach";
 import { getProviders } from "@/lib/providers";
 import { getStore } from "@/lib/store";
 
@@ -33,6 +34,8 @@ export async function POST(req: Request) {
     visitorId: body.data.visitorId ?? null,
   });
   if (result.activationTriggered) void runAgent("jerry");
+  // "Send me my estimate" from the personalized page becomes a rep task with the numbers attached.
+  if (body.data.event === "estimate_submitted") await createEstimateTask(store, result.account, body.data.properties);
 
   return json({
     ok: true,

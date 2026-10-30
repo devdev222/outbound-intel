@@ -6,7 +6,7 @@ import { ClayDiscoveryProvider, ClaySignalCollector } from "./discovery/clay";
 import { MockDiscoveryProvider, MockSignalCollector } from "./discovery/mock";
 import { NativeSignalCollector } from "./discovery/native";
 import { ClayEnrichmentProvider, HttpEnrichmentProvider, MockEnrichmentProvider } from "./enrichment";
-import { CartageDialerProvider, CartageSequencerProvider, MockDialerProvider, MockOutreachProvider } from "./outreach";
+import { CartageDialerProvider, CartageSequencerProvider, MockDialerProvider, MockOutreachProvider, ResendOutreachProvider } from "./outreach";
 import type { Providers, SignalCollector } from "./types";
 import { MockVideoProvider, TavusVideoProvider } from "./video";
 
@@ -53,7 +53,12 @@ export function getProviders(): Providers {
           ? new HttpEnrichmentProvider()
           : new MockEnrichmentProvider(),
     video: config.providers.video === "tavus" ? new TavusVideoProvider() : new MockVideoProvider(),
-    outreach: config.providers.outreach === "sequencer" ? new CartageSequencerProvider() : new MockOutreachProvider(),
+    outreach:
+      config.providers.outreach === "sequencer"
+        ? new CartageSequencerProvider()
+        : config.providers.outreach === "resend"
+          ? new ResendOutreachProvider()
+          : new MockOutreachProvider(),
     dialer: config.providers.dialer === "cartage" ? new CartageDialerProvider() : new MockDialerProvider(),
     analytics: config.providers.analytics === "posthog" ? new PostHogAnalyticsProvider() : new NoopAnalyticsProvider(),
     alerts: config.providers.alerts === "slack" ? new SlackAlertProvider() : new ConsoleAlertProvider(),

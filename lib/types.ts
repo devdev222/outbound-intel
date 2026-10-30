@@ -146,7 +146,23 @@ export interface ExperimentArms {
   gifting: "gift" | "control";
 }
 
-export type VideoStatus = "pending" | "rendering" | "ready" | "failed";
+/**
+ * pending: campaign exists, Video Agent has not run yet
+ * script_ready: beats + script written, not yet submitted (AI arm) / brief issued (rep arm)
+ * awaiting_recording: rep arm, waiting for a human to record and attach the clip
+ * rendering: submitted to the video provider
+ * ready / failed: terminal (failed is retried up to 3 times)
+ */
+export type VideoStatus = "pending" | "script_ready" | "awaiting_recording" | "rendering" | "ready" | "failed";
+
+export interface VideoBeats {
+  /** Opens on the top verified signal, says the contact's name. */
+  hook: string;
+  /** One proof point: case study metric or peer outcome. */
+  proof: string;
+  /** One ask: the page link and a 15-minute slot. */
+  ask: string;
+}
 
 export interface RoiDefaults {
   shipmentsPerMonth: number;
@@ -165,6 +181,17 @@ export interface Campaign {
   videoId?: string;
   videoUrl?: string;
   videoThumbnailUrl?: string;
+  /** Structured beats the Video Agent wrote the script from. */
+  videoBeats?: VideoBeats;
+  /** Rep-arm recording brief (who, what to say, where to upload). */
+  videoBrief?: string;
+  /** "ai" (provider render) or "rep" (human recording attached). */
+  videoSource?: "ai" | "rep";
+  /** Bumped every time the Video Agent rewrites the script (e.g. after Research changes a signal). */
+  scriptVersion?: number;
+  /** Provider submission attempts, for bounded retries. */
+  videoAttempts?: number;
+  videoStatusDetails?: string;
   roiDefaults: RoiDefaults;
   caseStudyId: string;
   pageUrl: string;
@@ -238,9 +265,26 @@ export type AgentId =
   | "pain_point"
   | "research"
   | "scoring"
-  | "jerry"
   | "campaign"
+  | "video"
+  | "jerry"
   | "learning";
+
+/**
+ * Per-account audit trail: what the team (and reps) did to an account and why.
+ * Every agent writes entries through ctx.activity(); the account page renders
+ * them as the "team" lane next to the prospect's engagement lane.
+ */
+export interface ActivityEntry {
+  id: string;
+  accountId: string;
+  actor: AgentId | "system" | "rep" | "webhook";
+  /** Short machine-friendly verb, e.g. "signals_found", "score_updated", "video_submitted". */
+  action: string;
+  summary: string;
+  details?: string[];
+  at: string;
+}
 
 export interface AgentRun {
   id: string;
@@ -370,12 +414,19 @@ export type EventType =
   | "pricing_viewed"
   | "booking_clicked"
   | "return_visit_24h"
+  | "email_sent"
+  | "email_delivered"
   | "email_open"
   | "email_click"
   | "email_reply"
+  | "email_bounced"
+  | "linkedin_sent"
   | "linkedin_accept"
   | "linkedin_reply"
-  | "visitor_identified";
+  | "gift_sent"
+  | "visitor_identified"
+  | "estimate_submitted"
+  | "meeting_canceled";
 
 export interface EngagementEvent {
   id: string;
@@ -440,18 +491,31 @@ export interface CallQueueItem {
   createdAt: string;
 }
 
+export type OutreachChannel = "email" | "linkedin" | "inmail" | "gift";
+
+/**
+ * scheduled: waiting for its send time
+ * awaiting_rep: due, but the active provider cannot send this channel; shown as a rep task
+ * sent / skipped / failed: terminal
+ */
+export type OutreachStatus = "scheduled" | "awaiting_rep" | "sent" | "skipped" | "failed";
+
 export interface OutreachTouch {
   id: string;
   accountId: string;
-  channel: "email" | "linkedin" | "inmail" | "gift";
+  channel: OutreachChannel;
   step: number;
   subject?: string;
   body: string;
-  status: "scheduled" | "sent" | "skipped";
+  status: OutreachStatus;
   scheduledFor: string;
   sentAt?: string;
   provider: string;
   externalId?: string;
+  /** Why it failed or was handed to a rep. */
+  note?: string;
+  /** Deep link for the rep task (LinkedIn profile, gifting vendor). */
+  taskUrl?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ variable, so wiring the real systems in is configuration, not a rewrite. See
 
 ## The team
 
-Ten agents run continuously on cadences (`lib/agents/`). Each pulls its own work from the store, processes a bounded batch and writes back, so the team survives restarts and can run across several workers.
+Eleven agents run continuously on cadences (`lib/agents/`). Each pulls its own work from the store, processes a bounded batch and writes back, so the team survives restarts and can run across several workers. Every action an agent takes on an account is written to that account's activity log and shown next to the prospect's own engagement on the account page.
 
 | Agent | Step | Does |
 |---|---|---|
@@ -37,8 +37,9 @@ Ten agents run continuously on cadences (`lib/agents/`). Each pulls its own work
 | Pain-Point Agent | 2 | Public evidence of coordination load, carrier and service problems, cost pressure; infers pain from hiring volume |
 | Research Agent | 2 | Validates or rejects each signal against its evidence, picks the decision-maker, writes the brief, lists what is missing |
 | Scoring Agent | 3 | Scores with the current model version, explains, qualifies |
-| Campaign Agent | 4-5 | Builds and launches the personalized experience; polls video rendering |
-| Jerry | 7 | Cartage's trained sales agent: enrichment, talk track, alert, call queue |
+| Campaign Agent | 4-5 | Builds and launches the personalized page content and the 5-touch sequence; sends due touches or hands them to reps as tasks |
+| Video Agent | 4 | Writes the 15-25s beat sheet and script from the whole dossier; submits AI renders to Tavus or issues a rep recording brief; rewrites when signals change |
+| Jerry | 7 | Cartage's trained sales agent: enrichment, talk track, alert, call queue, adapts the next touch |
 | Learning Agent | 8 | Retrains when new outcomes exist; bumps the model version |
 
 ## Quick start
@@ -55,6 +56,14 @@ In the dashboard: **Seed demo data**, then open any account, run the **hot-lead 
 Other scripts: `npm run seed [count]`, `npm run learn`, `npm run score`, `npm run reset`, `npm run worker` (24/7 loop), `npm run mcp` (MCP server).
 
 Without `ANTHROPIC_API_KEY` every agent uses a deterministic template path, so the demo is complete either way; with the key, explanations, briefs, playbooks, copy and talk tracks are written by Claude (Opus 5.5 by default, structured outputs, cached prompts, server-side refusal fallbacks).
+
+## Outreach, rep tasks and the video
+
+- **Email** is sent by the engine's scheduler when each touch is due, through the active provider: mock (nothing leaves), Resend (real delivery with opens and clicks flowing back through `/api/webhooks/resend`), or Cartage Sequencer (owns the whole cadence).
+- **LinkedIn, InMail and gifts** have no sending API, so when the Sequencer is not active those touches become **rep tasks**: the drafted message, a deep link and Mark sent / Skip buttons on the account page and on the Alerts page. Marking a task sent records it as engagement.
+- **Estimate requests** from the personalized page ("Send me my estimate") become a rep task with the prospect's inputs and results attached.
+- **Video**: the Video Agent writes hook / proof / ask beats and the script from every other agent's output. The AI arm renders through Tavus (mock player until a key exists); the rep arm issues a recording brief and the rep attaches the clip on the account page. The video is embedded on the account page and on the prospect page at `#video`.
+- **Integrations page** (`/integrations`): every connection with its status, the variables that drive it, the vendor-side steps, and a test button that makes the smallest real call.
 
 ## Running 24/7
 

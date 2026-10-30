@@ -91,10 +91,11 @@ server.registerTool(
     const store = getStore();
     const a = await store.getAccountBySlug(slug);
     if (!a) return { content: [{ type: "text", text: `No account with slug ${slug}` }], isError: true };
-    const [events, alerts, outreach] = await Promise.all([
+    const [events, alerts, outreach, activity] = await Promise.all([
       store.listEvents({ accountId: a.id, limit: 20 }),
       store.listAlerts({ accountId: a.id, limit: 5 }),
       store.listOutreach({ accountId: a.id }),
+      store.listActivity({ accountId: a.id, limit: 40 }),
     ]);
     return text({
       ...summarize(a),
@@ -109,8 +110,52 @@ server.registerTool(
       campaign: a.campaign,
       recentEvents: events.map((e) => ({ at: e.createdAt, type: e.eventType, properties: e.properties })),
       alerts: alerts.map((al) => ({ at: al.createdAt, talkTrack: al.payload.talkTrack, triggeredBy: al.payload.triggeredBy })),
-      outreach: outreach.map((t) => ({ step: t.step, channel: t.channel, status: t.status, scheduledFor: t.scheduledFor })),
+      outreach: outreach.map((t) => ({ id: t.id, step: t.step, channel: t.channel, status: t.status, scheduledFor: t.scheduledFor, note: t.note })),
+      video: a.campaign ? { status: a.campaign.videoStatus, source: a.campaign.videoSource, beats: a.campaign.videoBeats, url: a.campaign.videoUrl, scriptVersion: a.campaign.scriptVersion } : null,
+      teamActivity: activity.map((e) => ({ at: e.at, actor: e.actor, action: e.action, summary: e.summary })),
     });
+  },
+);
+
+server.registerTool(
+  "list_rep_tasks",
+  {
+    title: "List rep tasks",
+    description: "Outreach touches waiting on a human (LinkedIn messages, InMail, gifts, manual emails, estimate requests), newest first.",
+    inputSchema: { limit: z.number().int().min(1).max(100).default(25) },
+  },
+  async ({ limit }) => {
+    const store = getStore();
+    const tasks = await store.listOutreach({ status: "awaiting_rep", limit });
+    const accounts = new Map((await store.listAccounts()).map((a) => [a.id, a]));
+    return text(
+      tasks.map((t) => ({
+        id: t.id,
+        company: accounts.get(t.accountId)?.companyName,
+        slug: accounts.get(t.accountId)?.slug,
+        channel: t.channel,
+        step: t.step,
+        subject: t.subject,
+        body: t.body,
+        note: t.note,
+        taskUrl: t.taskUrl,
+      })),
+    );
+  },
+);
+
+server.registerTool(
+  "complete_rep_task",
+  {
+    title: "Complete a rep task",
+    description: "Mark a rep task as sent (records the send as engagement) or skipped.",
+    inputSchema: { id: z.string(), status: z.enum(["sent", "skipped"]) },
+  },
+  async ({ id, status }) => {
+    const { completeRepTask } = await import("@/lib/engine/outreach");
+    const touch = await completeRepTask(getStore(), id, status, "mcp");
+    if (!touch) return { content: [{ type: "text", text: `No task with id ${id}` }], isError: true };
+    return text({ id: touch.id, status: touch.status, channel: touch.channel, step: touch.step });
   },
 );
 

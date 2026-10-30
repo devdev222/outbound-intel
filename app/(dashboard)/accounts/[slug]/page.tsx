@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ActivityTimeline } from "@/components/dashboard/ActivityTimeline";
 import { AlertCard } from "@/components/dashboard/AlertCard";
 import { EngagementSimulator } from "@/components/dashboard/EngagementSimulator";
 import { OutcomeButtons } from "@/components/dashboard/OutcomeButtons";
+import { RepTaskActions } from "@/components/dashboard/RepTaskActions";
+import { outreachPillClass } from "@/components/dashboard/format";
 import { ScoreBreakdown } from "@/components/dashboard/ScoreBreakdown";
+import { VideoPanel } from "@/components/dashboard/VideoPanel";
 import { fmtInt, fmtTime, scoreColor, statusLabel, statusPillClass } from "@/components/dashboard/format";
-import { describeEvent } from "@/lib/engine/engagement";
 import { getStore } from "@/lib/store";
 import type { Signal } from "@/lib/types";
 
@@ -17,12 +20,13 @@ export default async function AccountPage({ params }: { params: Promise<{ slug: 
   const account = await store.getAccountBySlug(slug);
   if (!account) notFound();
 
-  const [model, events, alerts, outreach, outcomes] = await Promise.all([
+  const [model, events, alerts, outreach, outcomes, activity] = await Promise.all([
     store.getLatestModel(),
-    store.listEvents({ accountId: account.id, limit: 50 }),
+    store.listEvents({ accountId: account.id, limit: 100 }),
     store.listAlerts({ accountId: account.id }),
     store.listOutreach({ accountId: account.id }),
     store.listOutcomes({ accountId: account.id }),
+    store.listActivity({ accountId: account.id, limit: 150 }),
   ]);
 
   const verified = account.signals.filter((s) => s.status === "verified");
@@ -177,14 +181,7 @@ export default async function AccountPage({ params }: { params: Promise<{ slug: 
               </div>
             </div>
             <div className="space-y-3 text-sm">
-              <div>
-                <div className="text-xs uppercase tracking-wider text-[var(--muted)]">
-                  Video{" "}
-                  <span className={camp.videoStatus === "ready" ? "pill pill-good" : camp.videoStatus === "failed" ? "pill pill-bad" : "pill pill-warn"}>{camp.videoStatus}</span>
-                  {camp.videoId && <span className="mono ml-1 text-[var(--muted)]">{camp.videoId}</span>}
-                </div>
-                <p className="mt-1 whitespace-pre-wrap rounded-md bg-[var(--panel-2)] p-2 text-xs leading-relaxed">{camp.videoScript}</p>
-              </div>
+              <VideoPanel slug={account.slug} campaign={camp} />
               <div>
                 <div className="text-xs uppercase tracking-wider text-[var(--muted)]">ROI defaults</div>
                 <div className="mono text-xs">
@@ -203,26 +200,14 @@ export default async function AccountPage({ params }: { params: Promise<{ slug: 
       </section>
 
       <section className="grid gap-3 lg:grid-cols-2">
+        <ActivityTimeline activity={activity} events={events} />
         <div className="panel p-4">
-          <h2 className="font-semibold">Engagement timeline</h2>
-          {events.length ? (
-            <ol className="mt-2 max-h-[420px] space-y-1.5 overflow-y-auto text-sm">
-              {events.map((e) => (
-                <li key={e.id} className="grid grid-cols-[112px_1fr] gap-2">
-                  <span className="mono text-xs text-[var(--muted)]">{fmtTime(e.createdAt).slice(5)}</span>
-                  <span>
-                    {describeEvent(e)}
-                    {e.visitorId && <span className="ml-1 text-xs text-[var(--muted)]">· {e.visitorId.slice(0, 12)}</span>}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <div className="mt-2 text-sm text-[var(--muted)]">No engagement yet. Use the simulator or visit the personalized page.</div>
-          )}
-        </div>
-        <div className="panel p-4">
-          <h2 className="font-semibold">Outreach sequence</h2>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="font-semibold">Outreach sequence</h2>
+            {outreach.some((t) => t.status === "awaiting_rep") && (
+              <span className="pill pill-warn">{outreach.filter((t) => t.status === "awaiting_rep").length} rep task(s)</span>
+            )}
+          </div>
           {outreach.length ? (
             <div className="mt-2 overflow-x-auto">
               <table className="w-full text-sm">
@@ -241,7 +226,8 @@ export default async function AccountPage({ params }: { params: Promise<{ slug: 
                       <td className="mono py-1.5 pr-2">{t.step}</td>
                       <td className="py-1.5 pr-2">{t.channel}</td>
                       <td className="py-1.5 pr-2">
-                        <span className={t.status === "sent" ? "pill pill-good" : t.status === "skipped" ? "pill" : "pill pill-info"}>{t.status}</span>
+                        <span className={outreachPillClass(t.status)}>{statusLabel(t.status)}</span>
+                        {t.sentAt && <div className="mono mt-0.5 text-[10px] text-[var(--muted)]">{fmtTime(t.sentAt).slice(5)}</div>}
                       </td>
                       <td className="mono py-1.5 pr-2 text-xs text-[var(--muted)]">{fmtTime(t.scheduledFor).slice(0, 11)}</td>
                       <td className="py-1.5 text-xs">
@@ -249,6 +235,13 @@ export default async function AccountPage({ params }: { params: Promise<{ slug: 
                         <div className="line-clamp-2 text-[var(--muted)]" title={t.body}>
                           {t.body}
                         </div>
+                        {t.note && <div className={`mt-0.5 ${t.status === "failed" ? "text-[var(--bad)]" : "text-[var(--warn)]"}`}>{t.note}</div>}
+                        {t.provider && t.provider !== "pending" && <div className="mt-0.5 text-[10px] text-[var(--muted)]">via {t.provider}</div>}
+                        {t.status === "awaiting_rep" && (
+                          <div className="mt-1.5">
+                            <RepTaskActions touch={t} />
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}

@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type {
   Account,
+  ActivityEntry,
   AgentId,
   AgentRun,
   AgentState,
@@ -441,42 +442,92 @@ export class SupabaseStore implements Store {
 
   async insertOutreach(touches: OutreachTouch[]): Promise<void> {
     if (!touches.length) return;
-    const { error } = await this.db.from("outreach_touches").insert(
-      touches.map((t) => ({
-        id: t.id,
-        account_id: t.accountId,
-        channel: t.channel,
-        step: t.step,
-        subject: t.subject ?? null,
-        body: t.body,
-        status: t.status,
-        scheduled_for: t.scheduledFor,
-        sent_at: t.sentAt ?? null,
-        provider: t.provider,
-        external_id: t.externalId ?? null,
-      })),
-    );
+    const { error } = await this.db.from("outreach_touches").insert(touches.map((t) => this.touchToRow(t)));
     if (error) this.fail("insertOutreach", error);
   }
 
-  async listOutreach(opts: { accountId?: string; limit?: number } = {}): Promise<OutreachTouch[]> {
+  private rowToTouch(r: Record<string, unknown>): OutreachTouch {
+    return {
+      id: r.id as string,
+      accountId: r.account_id as string,
+      channel: r.channel as OutreachTouch["channel"],
+      step: r.step as number,
+      subject: (r.subject as string) ?? undefined,
+      body: r.body as string,
+      status: r.status as OutreachTouch["status"],
+      scheduledFor: r.scheduled_for as string,
+      sentAt: (r.sent_at as string) ?? undefined,
+      provider: r.provider as string,
+      externalId: (r.external_id as string) ?? undefined,
+      note: (r.note as string) ?? undefined,
+      taskUrl: (r.task_url as string) ?? undefined,
+    };
+  }
+
+  private touchToRow(t: OutreachTouch) {
+    return {
+      id: t.id,
+      account_id: t.accountId,
+      channel: t.channel,
+      step: t.step,
+      subject: t.subject ?? null,
+      body: t.body,
+      status: t.status,
+      scheduled_for: t.scheduledFor,
+      sent_at: t.sentAt ?? null,
+      provider: t.provider,
+      external_id: t.externalId ?? null,
+      note: t.note ?? null,
+      task_url: t.taskUrl ?? null,
+    };
+  }
+
+  async updateOutreach(touch: OutreachTouch): Promise<void> {
+    const { error } = await this.db.from("outreach_touches").upsert(this.touchToRow(touch), { onConflict: "id" });
+    if (error) this.fail("updateOutreach", error);
+  }
+
+  async getOutreach(id: string): Promise<OutreachTouch | null> {
+    const { data, error } = await this.db.from("outreach_touches").select("*").eq("id", id).maybeSingle();
+    if (error) this.fail("getOutreach", error);
+    return data ? this.rowToTouch(data) : null;
+  }
+
+  async listOutreach(opts: { accountId?: string; status?: OutreachTouch["status"]; dueBefore?: string; limit?: number } = {}): Promise<OutreachTouch[]> {
     let q = this.db.from("outreach_touches").select("*").order("scheduled_for", { ascending: true });
     if (opts.accountId) q = q.eq("account_id", opts.accountId);
+    if (opts.status) q = q.eq("status", opts.status);
+    if (opts.dueBefore) q = q.lte("scheduled_for", opts.dueBefore);
     if (opts.limit) q = q.limit(opts.limit);
     const { data, error } = await q;
     if (error) this.fail("listOutreach", error);
+    return (data ?? []).map((r) => this.rowToTouch(r));
+  }
+
+  // Activity -------------------------------------------------------------------
+
+  async insertActivity(entries: ActivityEntry[]): Promise<void> {
+    if (!entries.length) return;
+    const { error } = await this.db.from("account_activity").insert(
+      entries.map((e) => ({ id: e.id, account_id: e.accountId, actor: e.actor, action: e.action, summary: e.summary, details: e.details ?? [], at: e.at })),
+    );
+    if (error) this.fail("insertActivity", error);
+  }
+
+  async listActivity(opts: { accountId?: string; limit?: number } = {}): Promise<ActivityEntry[]> {
+    let q = this.db.from("account_activity").select("*").order("at", { ascending: false });
+    if (opts.accountId) q = q.eq("account_id", opts.accountId);
+    if (opts.limit) q = q.limit(opts.limit);
+    const { data, error } = await q;
+    if (error) this.fail("listActivity", error);
     return (data ?? []).map((r) => ({
       id: r.id,
       accountId: r.account_id,
-      channel: r.channel,
-      step: r.step,
-      subject: r.subject ?? undefined,
-      body: r.body,
-      status: r.status,
-      scheduledFor: r.scheduled_for,
-      sentAt: r.sent_at ?? undefined,
-      provider: r.provider,
-      externalId: r.external_id ?? undefined,
+      actor: r.actor,
+      action: r.action,
+      summary: r.summary,
+      details: r.details ?? [],
+      at: r.at,
     }));
   }
 
@@ -562,7 +613,7 @@ export class SupabaseStore implements Store {
 
   async reset(): Promise<void> {
     // Order matters because of foreign keys.
-    for (const table of ["outreach_touches", "call_queue", "alerts", "outcomes", "events", "agent_runs"]) {
+    for (const table of ["account_activity", "outreach_touches", "call_queue", "alerts", "outcomes", "events", "agent_runs"]) {
       const { error } = await this.db.from(table).delete().not("id", "is", null);
       if (error) this.fail(`reset:${table}`, error);
     }

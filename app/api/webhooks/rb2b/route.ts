@@ -1,6 +1,7 @@
 import { runAgent, tick } from "@/lib/agents/runtime";
 import { error, json, safeEqual } from "@/lib/api";
 import { config } from "@/lib/config";
+import { logActivity } from "@/lib/engine/activity";
 import { recordEngagement } from "@/lib/engine/engagement";
 import { ingestFacts } from "@/lib/engine/ingest";
 import { getProviders } from "@/lib/providers";
@@ -79,6 +80,7 @@ export async function POST(req: Request) {
     source: "rb2b",
   };
   const { account: created } = await ingestFacts(store, facts);
+  await logActivity(store, created.id, "webhook", "rb2b_visitor_created_account", `New account from an identified website visitor${name ? ` (${name}${title ? `, ${title}` : ""})` : ""}`, [capturedUrl]);
   await recordEngagement(store, providers, created, {
     eventType: "visitor_identified",
     properties: { name, title, capturedUrl, isRepeat, source: "rb2b", note: "new account created from website visitor" },

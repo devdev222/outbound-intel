@@ -10,7 +10,7 @@ export default async function AgentsPage() {
       <div>
         <h1 className="text-xl font-semibold">Agent team</h1>
         <p className="text-sm text-[var(--muted)]">
-          Ten workers, each with a cadence, pulling their own queue from the store. {initial.summary.accounts.toLocaleString("en-US")} accounts · {initial.summary.events.toLocaleString("en-US")} events ·{" "}
+          {initial.agents.length} workers, each with a cadence, pulling their own queue from the store. {initial.summary.accounts.toLocaleString("en-US")} accounts · {initial.summary.events.toLocaleString("en-US")} events ·{" "}
           {initial.summary.alerts} alerts · model v{initial.summary.modelVersion ?? "-"}
         </p>
       </div>

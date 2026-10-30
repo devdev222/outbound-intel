@@ -120,6 +120,10 @@ In both modes Jerry's data lookups go through the `EnrichmentProvider` (Clay or 
 3. The Campaign Agent calls `POST https://tavusapi.com/v2/videos` with `replica_id`, `script`, `video_name`, `callback_url`; the callback updates `campaign.videoStatus`, `videoUrl`, `videoThumbnailUrl`. The page plays `stream_url`/`hosted_url` and fires the same 25/50/75/100 events as the mock player.
 4. Tavus exposes no watch analytics for generated videos; engagement comes from our own player events, which is why the page hosts the video rather than linking out.
 
+## Resend (email delivery before the Sequencer exists)
+
+`OUTREACH_PROVIDER=resend`, `RESEND_API_KEY`, `RESEND_FROM` (a verified sender). The engine's scheduler sends each email touch when due via `POST https://api.resend.com/emails` (tags carry `account_slug`, `touch_id`, `step`), with an idempotency key per touch. Add a webhook in Resend for `email.delivered`, `email.opened`, `email.clicked`, `email.bounced`, `email.complained` pointing at `/api/webhooks/resend` and set `RESEND_WEBHOOK_SECRET` (Svix-signed: `svix-id`, `svix-timestamp`, `svix-signature`). Opens and clicks become engagement; bounces mark the touch failed. LinkedIn, InMail and gift touches become rep tasks in the dashboard.
+
 ## Cartage Sequencer and Dialer (internal)
 
 Proposed contracts, in `lib/providers/outreach.ts`:

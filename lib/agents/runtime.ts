@@ -1,4 +1,5 @@
 import { config } from "@/lib/config";
+import { activityEntry } from "@/lib/engine/activity";
 import { bootstrapModel } from "@/lib/engine/learn";
 import { getProviders } from "@/lib/providers";
 import { getStore, type Store } from "@/lib/store";
@@ -96,9 +97,22 @@ export function runAgent(agentId: AgentId, opts: { force?: boolean } = {}): Prom
       run.details.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
       console.log(`[${def.id}] ${line}`);
     };
+    const pending: ReturnType<typeof activityEntry>[] = [];
+    const activity: AgentContext["activity"] = (accountId, action, summary, details) => {
+      pending.push(activityEntry(accountId, def.id, action, summary, details));
+    };
+    const flushActivity = async () => {
+      if (!pending.length) return;
+      const batch = pending.splice(0, pending.length);
+      try {
+        await store.insertActivity(batch);
+      } catch (err) {
+        console.warn(`[${def.id}] activity flush failed: ${(err as Error).message}`);
+      }
+    };
     try {
       const model = await getOrBootstrapModel(store);
-      const ctx: AgentContext = { store, providers, model, batchSize: config.agents.batchSize, log };
+      const ctx: AgentContext = { store, providers, model, batchSize: config.agents.batchSize, log, activity };
       const result = await def.run(ctx);
       run.status = "ok";
       run.processed = result.processed;
@@ -109,6 +123,7 @@ export function runAgent(agentId: AgentId, opts: { force?: boolean } = {}): Prom
       run.summary = `error: ${(err as Error).message}`;
       console.error(`[${def.id}] ${run.error}`);
     } finally {
+      await flushActivity();
       run.finishedAt = nowIso();
       await store.updateAgentRun(run);
       await store.saveAgentState({

@@ -2,6 +2,7 @@ import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
 import type { Account, HistoricalRecord, Outcome, OutcomeType } from "@/lib/types";
 import { nowIso, uuid } from "@/lib/util";
+import { logActivity } from "./activity";
 
 /**
  * LEARN AGAIN (spec Phase 4). Every meeting booked, opportunity created, deal
@@ -83,5 +84,11 @@ export async function recordOutcome(
 
   const status = STATUS_FOR[input.outcomeType] ?? account.status;
   const updated = await store.upsertAccount({ ...account, status, pendingActivation: null });
+  const actor = outcome.source === "calendly" || outcome.source === "resend" ? "webhook" : outcome.source === "demo" || outcome.source === "mcp" ? "system" : "rep";
+  await logActivity(store, account.id, actor, "outcome_logged", `Outcome: ${input.outcomeType.replace(/_/g, " ")}${input.value ? ` ($${Number(input.value).toLocaleString()})` : ""}`, [
+    input.notes ?? "",
+    fedBack ? "fed back into the historical set; model retrains on the next learning pass" : "",
+    status !== account.status ? `status ${account.status} -> ${status}` : "",
+  ]);
   return { outcome, account: updated, fedBack };
 }

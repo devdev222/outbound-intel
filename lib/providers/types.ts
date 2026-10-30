@@ -81,11 +81,28 @@ export interface VideoProvider {
 
 // Outreach -------------------------------------------------------------------
 
+export interface SendResult {
+  status: "sent" | "failed";
+  externalId?: string;
+  note?: string;
+}
+
 export interface OutreachProvider {
   readonly name: string;
-  /** Launch a multi-touch sequence. Returns the touches with provider status / external ids filled in. */
+  /** Channels this provider can send by itself. Due touches on other channels become rep tasks. */
+  readonly channels: OutreachTouch["channel"][];
+  /**
+   * true when the provider runs the whole cadence itself (Cartage Sequencer):
+   * launchSequence hands over all touches and the engine never calls sendTouch.
+   * false for simple senders (Resend, mock): the engine's scheduler sends each
+   * touch when it is due.
+   */
+  readonly ownsScheduling: boolean;
+  /** Register a sequence. Providers that own scheduling return touches with external ids; others return them unchanged. */
   launchSequence(account: Account, touches: OutreachTouch[]): Promise<OutreachTouch[]>;
-  /** Adapt the remaining touches after an engagement signal (e.g. reference the video they watched). */
+  /** Send one due touch now (only for channels in `channels`). */
+  sendTouch(account: Account, touch: OutreachTouch): Promise<SendResult>;
+  /** Adapt the remaining touches after an engagement signal (providers that own scheduling). */
   adaptSequence(account: Account, reason: string): Promise<{ adapted: boolean; note: string }>;
 }
 

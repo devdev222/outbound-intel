@@ -5,8 +5,13 @@ import { generateStructured } from "@/lib/llm";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
 import type { Account, Campaign, ExperimentArms, OutreachTouch, RoiDefaults, ScoringModel, Signal } from "@/lib/types";
-import { hash32, nowIso, uuid } from "@/lib/util";
+import { hash32, nowIso, pageTokenFor, uuid } from "@/lib/util";
 import { SIGNAL_BY_KEY, signalLabel } from "./signal-catalog";
+
+/** Canonical personalized page URL: /for/{slug}-{token}. The token is derived from the account id. */
+export function pageUrlFor(account: Pick<Account, "id" | "slug">): string {
+  return `${config.appUrl}/for/${account.slug}-${pageTokenFor(account.id)}`;
+}
 
 /**
  * Campaign generation (spec Phase 2): once an account qualifies, build the
@@ -52,11 +57,11 @@ export function roiDefaultsFor(account: Account): RoiDefaults {
   return { shipmentsPerMonth: shipments, minutesPerShipment, hourlyCost, coordinators };
 }
 
-function firstName(account: Account): string {
+export function firstName(account: Account): string {
   return account.contact?.name.split(" ")[0] ?? "there";
 }
 
-function signalPhrase(sig: Signal | null, account: Account): string {
+export function signalPhrase(sig: Signal | null, account: Account): string {
   if (!sig) return "your shipping volume";
   switch (sig.key) {
     case "hiring:transportation_coordinator":
@@ -102,7 +107,7 @@ function signalPhrase(sig: Signal | null, account: Account): string {
   }
 }
 
-function proofPoint(industry: string): string {
+export function proofPoint(industry: string): string {
   const study = caseStudyFor(industry);
   const m = study.metrics[0];
   const who = study.industry === "General" ? "A manufacturer at similar volume" : `A ${study.industry.toLowerCase()} customer`;
@@ -261,16 +266,20 @@ export async function launchCampaign(
 ): Promise<Account> {
   const arms = assignArms(account.id);
   const copy = await generateCopy(account, ctx.model, arms);
-  const pageUrl = `${config.appUrl}/for/${account.slug}`;
+  const pageUrl = pageUrlFor(account);
   const roi = roiDefaultsFor(account);
 
-  let campaign: Campaign = {
+  // The Video Agent owns the script, the render and the rep brief from here on.
+  const campaign: Campaign = {
     headline: copy.headline,
     subheadline: copy.subheadline,
     angle: angleFor(account, ctx.model, arms.angleVariant),
     persona: account.recommendedPersona ?? account.contact?.title ?? "VP of Transportation",
     videoScript: copy.videoScript,
     videoStatus: "pending",
+    videoSource: arms.videoType,
+    scriptVersion: 0,
+    videoAttempts: 0,
     roiDefaults: roi,
     caseStudyId: caseStudyFor(account.industry).id,
     pageUrl,
@@ -278,29 +287,7 @@ export async function launchCampaign(
     launchedAt: nowIso(),
   };
 
-  // Video (Tavus or mock). AI video arm only; "rep" arm expects a human-recorded clip uploaded later.
-  if (arms.videoType === "ai") {
-    try {
-      const video = await ctx.providers.video.createVideo({
-        script: copy.videoScript,
-        name: `${account.companyName} - ${account.slug}`,
-        accountSlug: account.slug,
-        callbackUrl: `${config.appUrl}/api/webhooks/tavus`,
-      });
-      campaign = {
-        ...campaign,
-        videoId: video.videoId,
-        videoStatus: video.status,
-        videoUrl: video.hostedUrl,
-        videoThumbnailUrl: video.thumbnailUrl,
-      };
-    } catch (err) {
-      ctx.log?.(`video provider failed for ${account.slug}: ${(err as Error).message}`);
-      campaign = { ...campaign, videoStatus: "failed" };
-    }
-  }
-
-  // Outreach sequence (Cartage Sequencer or mock).
+  // Outreach sequence: registered with the provider; the engine sends due touches unless the provider owns scheduling.
   const touches = buildTouches(account, campaign, copy);
   let launched: OutreachTouch[] = touches;
   try {

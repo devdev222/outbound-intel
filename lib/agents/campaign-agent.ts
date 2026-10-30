@@ -1,19 +1,22 @@
 import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
 import { launchCampaign } from "@/lib/engine/campaign";
+import { processDueTouches } from "@/lib/engine/outreach";
 import { type AgentDefinition, mapLimit } from "./base";
 
 /**
  * Campaign Agent: launches the personalized experience for every account that
- * crosses the qualification threshold (landing page content, video, outreach
- * sequence, experiment arms) and keeps video status current for async
- * providers such as Tavus.
+ * crosses the qualification threshold (page content, ROI defaults, case study,
+ * outreach sequence, experiment arms) and then runs the outreach scheduler:
+ * every due touch is sent through the active provider, or handed to a rep as a
+ * task when the channel has no sending API here (LinkedIn, InMail, gifts).
+ * The Video Agent owns the video from the moment a campaign exists.
  */
 export const campaignAgent: AgentDefinition = {
   id: "campaign",
   name: "Campaign Agent",
-  role: "personalization + experiments",
-  description: "Builds the /for/[company] page content, video script, ROI defaults and 5-touch sequence for each qualified account; assigns A/B arms; polls video rendering.",
+  role: "personalization + experiments + sequencing",
+  description: "Builds the /for/ page content, ROI defaults and 5-touch sequence for each qualified account; assigns A/B arms; sends due touches or hands them to reps as tasks.",
   cadenceSeconds: 45,
   step: 4,
   async run(ctx) {
@@ -21,30 +24,24 @@ export const campaignAgent: AgentDefinition = {
     const toLaunch = all.filter((a) => a.status === "qualified" && !a.campaign).slice(0, ctx.batchSize);
     await mapLimit(toLaunch, config.agents.llmConcurrency, async (a) => {
       const launched = await launchCampaign(a, ctx);
+      const touches = await ctx.store.listOutreach({ accountId: a.id });
+      ctx.activity(a.id, "campaign_launched", `Campaign launched: "${launched.campaign?.headline}"`, [
+        `Arms: ${Object.entries(launched.campaign?.arms ?? {})
+          .map(([k, v]) => `${k}=${v}`)
+          .join(", ")}`,
+        `Sequence: ${touches.length} touches (${touches.map((t) => t.channel).join(", ")})`,
+        `Page: ${launched.campaign?.pageUrl}`,
+      ]);
       await ctx.store.upsertAccount(markAgentRun(launched, "campaign"));
     });
 
-    // Poll pending videos (no-op for the mock provider, which returns ready immediately).
-    const rendering = all.filter((a) => a.campaign && a.campaign.videoId && (a.campaign.videoStatus === "pending" || a.campaign.videoStatus === "rendering"));
-    let updatedVideos = 0;
-    for (const a of rendering.slice(0, 20)) {
-      try {
-        const v = await ctx.providers.video.getVideo(a.campaign!.videoId!);
-        if (v.status !== a.campaign!.videoStatus) {
-          await ctx.store.upsertAccount({
-            ...a,
-            campaign: { ...a.campaign!, videoStatus: v.status, videoUrl: v.hostedUrl ?? a.campaign!.videoUrl, videoThumbnailUrl: v.thumbnailUrl ?? a.campaign!.videoThumbnailUrl },
-          });
-          updatedVideos++;
-        }
-      } catch (err) {
-        ctx.log(`campaign: video poll failed for ${a.slug}: ${(err as Error).message}`);
-      }
-    }
+    const due = await processDueTouches(ctx.store, ctx.providers, { log: ctx.log, activity: ctx.activity });
 
-    return {
-      processed: toLaunch.length + updatedVideos,
-      summary: `${toLaunch.length} campaigns launched${updatedVideos ? `, ${updatedVideos} videos updated` : ""}${rendering.length ? `, ${rendering.length} videos rendering` : ""}`,
-    };
+    const parts = [`${toLaunch.length} campaigns launched`];
+    if (due.sent) parts.push(`${due.sent} touches sent via ${ctx.providers.outreach.name}`);
+    if (due.repTasks) parts.push(`${due.repTasks} rep tasks created`);
+    if (due.failed) parts.push(`${due.failed} failed`);
+    if (due.skipped) parts.push(`${due.skipped} skipped (account closed)`);
+    return { processed: toLaunch.length + due.sent + due.repTasks + due.failed, summary: parts.join(", ") };
   },
 };

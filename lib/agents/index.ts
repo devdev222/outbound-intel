@@ -6,6 +6,7 @@ import { learningAgent } from "./learning-agent";
 import { researchAgent } from "./research";
 import { scoringAgent } from "./scoring-agent";
 import { expansionAgent, hiringAgent, icpAgent, painPointAgent, technologyAgent } from "./signal-agents";
+import { videoAgent } from "./video-agent";
 
 /** The team, in pipeline order. The runtime runs them in this order on every tick. */
 export const AGENTS: AgentDefinition[] = [
@@ -17,6 +18,7 @@ export const AGENTS: AgentDefinition[] = [
   researchAgent,
   scoringAgent,
   campaignAgent,
+  videoAgent,
   jerryAgent,
   learningAgent,
 ];

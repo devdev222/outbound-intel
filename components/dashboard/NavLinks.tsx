@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/agents", label: "Agents" },
   { href: "/intelligence", label: "Intelligence" },
   { href: "/alerts", label: "Alerts" },
+  { href: "/integrations", label: "Integrations" },
 ];
 
 export function NavLinks() {

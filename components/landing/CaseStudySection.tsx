@@ -1,55 +1,55 @@
 "use client";
 
-import { useRef, useState } from "react";
-import type { CaseStudy } from "@/lib/content/case-studies";
+import { useRef } from "react";
+import type { Testimonial } from "@/lib/content/case-studies";
 import { track } from "./Tracker";
 
-export default function CaseStudySection({ slug, study }: { slug: string; study: CaseStudy }) {
-  const [open, setOpen] = useState(false);
-  const firedRef = useRef(false);
+/**
+ * Customer proof (cartage-pages Proof.astro). Renders nothing when no
+ * testimonial is eligible, exactly like the Astro template. Clicking through
+ * to a story fires case_study_viewed { caseStudyId, title } once per story.
+ */
+export default function CaseStudySection({ slug, testimonials }: { slug: string; testimonials: Testimonial[] }) {
+  const firedRef = useRef<Set<string>>(new Set());
+  const count = testimonials.length;
+  if (count === 0) return null;
 
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    if (next && !firedRef.current) {
-      firedRef.current = true;
-      track(slug, "case_study_viewed", { caseStudyId: study.id, title: study.title });
-    }
+  const onStory = (t: Testimonial) => {
+    if (firedRef.current.has(t.testimonial_id)) return;
+    firedRef.current.add(t.testimonial_id);
+    track(slug, "case_study_viewed", { caseStudyId: t.testimonial_id, title: t.customer, source_url: t.source_url });
   };
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm md:p-8">
-      <div className="text-xs font-semibold uppercase tracking-wider text-orange-600">{study.industry === "General" ? "Customer story" : study.industry}</div>
-      <h3 className="mt-2 text-2xl font-semibold text-slate-900">{study.title}</h3>
-      <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600">{study.summary}</p>
-
-      <dl className="mt-6 grid gap-4 sm:grid-cols-3">
-        {study.metrics.map((m) => (
-          <div key={m.label} className="rounded-lg bg-slate-50 p-4">
-            <dd className="text-2xl font-bold text-slate-900">{m.value}</dd>
-            <dt className="mt-1 text-sm text-slate-600">{m.label}</dt>
-          </div>
-        ))}
-      </dl>
-
-      {open && (
-        <blockquote className="mt-6 border-l-4 border-orange-500 pl-4">
-          <p className="text-lg leading-8 text-slate-800">&ldquo;{study.quote}&rdquo;</p>
-          <footer className="mt-2 text-sm text-slate-500">{study.quoteBy}</footer>
-        </blockquote>
-      )}
-
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={open}
-        className="mt-6 inline-flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-800 hover:border-slate-400 hover:bg-slate-50"
-      >
-        {open ? "Show less" : "Read the full story"}
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className={open ? "rotate-180 transition" : "transition"}>
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
-    </div>
+    <section className="cp-proof cp-section" id="proof" aria-labelledby="proof-title" data-section="proof">
+      <div className="cp-container">
+        <p className="cp-label cp-reveal">Customer proof</p>
+        <h2 className="cp-statement cp-proof__title cp-reveal" id="proof-title">
+          {count === 1 ? "A team that already runs freight with Wilson." : "Teams that already run freight with Wilson."}{" "}
+          <span className="cp-muted">In their words, with the full story one click away.</span>
+        </h2>
+        <div className={`cp-proof__list cp-proof__list--${count}`}>
+          {testimonials.map((t) => (
+            <figure className="cp-story cp-reveal" key={t.testimonial_id}>
+              <div className="cp-story__media">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={t.screenshot} alt={t.screenshot_alt} loading="lazy" width={1080} height={900} />
+              </div>
+              <div className="cp-story__body">
+                <p className="cp-story__customer">{t.customer}</p>
+                <blockquote className="cp-story__quote">
+                  <p>“{t.quote}”</p>
+                </blockquote>
+                <figcaption className="cp-story__by">{t.attribution}</figcaption>
+                <a className="cp-btn cp-btn--outline cp-btn--compact cp-story__link" href={t.source_url} target="_blank" rel="noopener noreferrer" onClick={() => onStory(t)}>
+                  Read the customer story <span className="cp-arrow" aria-hidden="true">→</span>
+                  <span className="cp-sr-only">: {t.customer} (opens cartage.ai)</span>
+                </a>
+              </div>
+            </figure>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }

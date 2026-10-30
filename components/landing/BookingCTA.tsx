@@ -1,158 +1,213 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { useCalcState } from "./CalcState";
+import { roundOutputs } from "./calc";
 import { track } from "./Tracker";
 
-const CALENDLY_WIDGET_SRC = "https://assets.calendly.com/assets/external/widget.js";
-
-interface BookingCTAProps {
+/**
+ * Conversion block inside the closing panel (cartage-pages Conversion.astro):
+ * the booking call to action and the "Send me my estimate" form.
+ *
+ * - With a scheduler link (Calendly), the primary button opens it in a new tab
+ *   with prefill + UTM tags; the click is tracked by Tracker via data-booking.
+ * - Without one, the primary button reveals the built-in request form, which
+ *   records a meeting request through the engine's outcomes endpoint.
+ * - The estimate form posts `estimate_submitted` to /api/track with the
+ *   visitor's email and the current calculator inputs/results, then shows the
+ *   Astro template's success copy.
+ */
+export interface BookingCTAProps {
   slug: string;
+  repName: string;
+  bookingHref: string | null;
   contactName?: string;
   contactEmail?: string;
-  calendlyUrl?: string;
 }
 
-async function postOutcome(slug: string, notes: string, source: string): Promise<boolean> {
-  try {
-    const res = await fetch("/api/outcomes", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ slug, outcomeType: "meeting_booked", notes, source }),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-/**
- * Booking call to action. With NEXT_PUBLIC_CALENDLY_URL set, renders Calendly's
- * inline embed (per https://developer.calendly.com/api-docs/overview/embedding/getting-started)
- * with prefill + UTM query params and listens for the parent-window events
- * `calendly.date_and_time_selected` and `calendly.event_scheduled`. Without it,
- * a lightweight in-page request form records the booking.
- */
-export default function BookingCTA({ slug, contactName, contactEmail, calendlyUrl }: BookingCTAProps) {
-  if (calendlyUrl) {
-    return <CalendlyEmbed slug={slug} url={calendlyUrl} contactName={contactName} contactEmail={contactEmail} />;
-  }
-  return <InlineRequest slug={slug} contactName={contactName} contactEmail={contactEmail} />;
-}
-
-function buildCalendlyUrl(base: string, slug: string, name?: string, email?: string): string {
-  const url = new URL(base);
-  url.searchParams.set("hide_event_type_details", "1");
-  url.searchParams.set("hide_gdpr_banner", "1");
-  if (name) url.searchParams.set("name", name);
-  if (email) url.searchParams.set("email", email);
-  url.searchParams.set("utm_source", "outbound-intel");
-  url.searchParams.set("utm_medium", "personalized-page");
-  url.searchParams.set("utm_campaign", slug);
-  return url.toString();
-}
-
-function CalendlyEmbed({ slug, url, contactName, contactEmail }: { slug: string; url: string; contactName?: string; contactEmail?: string }) {
-  const dataUrl = buildCalendlyUrl(url, slug, contactName, contactEmail);
-  const bookedRef = useRef(false);
-  const clickedRef = useRef(false);
-  const [booked, setBooked] = useState(false);
-
-  useEffect(() => {
-    if (!document.querySelector(`script[src="${CALENDLY_WIDGET_SRC}"]`)) {
-      const s = document.createElement("script");
-      s.src = CALENDLY_WIDGET_SRC;
-      s.async = true;
-      document.body.appendChild(s);
-    }
-    const onMessage = (e: MessageEvent) => {
-      const ev = (e.data as { event?: string } | undefined)?.event;
-      if (!ev || typeof ev !== "string" || !ev.startsWith("calendly.")) return;
-      if (ev === "calendly.date_and_time_selected" && !clickedRef.current) {
-        clickedRef.current = true;
-        track(slug, "booking_clicked", { source: "calendly" });
-      }
-      if (ev === "calendly.event_scheduled" && !bookedRef.current) {
-        bookedRef.current = true;
-        setBooked(true);
-        void postOutcome(slug, "Calendly embed", "calendly-embed");
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [slug]);
-
+export default function BookingCTA({ slug, repName, bookingHref, contactName, contactEmail }: BookingCTAProps) {
+  const who = repName || "us";
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
-      {booked && <div className="m-4 rounded-lg bg-green-50 p-4 text-sm text-green-800">Booked. A calendar invite is on its way.</div>}
-      <div className="calendly-inline-widget" data-url={dataUrl} style={{ minWidth: 320, height: 630 }} />
+    <div className="cp-convert">
+      <h2 className="cp-convert__title cp-reveal">Validate this estimate with {who}.</h2>
+      <p className="cp-convert__lede cp-reveal">
+        Bring your real numbers. We&apos;ll go through which parts of your workflow Wilson could take on first, and what that would look like in your inbox.
+      </p>
+      {bookingHref ? (
+        <a className="cp-btn cp-btn--primary cp-reveal" href={bookingHref} target="_blank" rel="noopener noreferrer" data-booking data-cta-location="conversion">
+          Validate this estimate with us <span className="cp-arrow" aria-hidden="true">→</span>
+        </a>
+      ) : (
+        <RequestForm slug={slug} contactName={contactName} contactEmail={contactEmail} />
+      )}
+      <EstimateForm slug={slug} repName={repName} contactEmail={contactEmail} />
     </div>
   );
 }
 
-function InlineRequest({ slug, contactName, contactEmail }: { slug: string; contactName?: string; contactEmail?: string }) {
+function RequestForm({ slug, contactName, contactEmail }: { slug: string; contactName?: string; contactEmail?: string }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(contactName ?? "");
   const [email, setEmail] = useState(contactEmail ?? "");
   const [state, setState] = useState<"idle" | "sending" | "done" | "error">("idle");
-  const clickedRef = useRef(false);
 
   const reveal = () => {
     setOpen(true);
-    if (!clickedRef.current) {
-      clickedRef.current = true;
-      track(slug, "booking_clicked", { source: "inline" });
-    }
+    track(slug, "booking_clicked", { cta_location: "conversion", source: "request-form" });
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (state === "sending" || state === "done") return;
+    if (!EMAIL.test(email.trim())) {
+      setState("error");
+      return;
+    }
     setState("sending");
-    const ok = await postOutcome(slug, "Requested via personalized page", "landing-page");
-    setState(ok ? "done" : "error");
+    try {
+      const res = await fetch("/api/outcomes", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slug, outcomeType: "meeting_booked", notes: `Requested via personalized page by ${name || "visitor"} <${email}>`, source: "landing-page" }),
+      });
+      setState(res.ok ? "done" : "error");
+    } catch {
+      setState("error");
+    }
+  };
+
+  if (!open) {
+    return (
+      <button type="button" className="cp-btn cp-btn--primary cp-reveal" onClick={reveal}>
+        Validate this estimate with us <span className="cp-arrow" aria-hidden="true">→</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="cp-send" data-request>
+      {state !== "done" ? (
+        <form className="cp-send__form" onSubmit={submit} noValidate>
+          <label className="cp-send__label" htmlFor="request-email">
+            Pick a time with the team
+          </label>
+          <p className="cp-send__hint">Leave your work email and we&apos;ll send a few 15-minute slots. No deck.</p>
+          <div className="cp-send__row">
+            <input className="cp-send__input" type="text" name="name" autoComplete="name" placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />
+            <input
+              id="request-email"
+              className="cp-send__input"
+              type="email"
+              name="email"
+              autoComplete="email"
+              inputMode="email"
+              placeholder="you@company.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+            <button className="cp-btn cp-btn--light cp-send__submit" type="submit" disabled={state === "sending"}>
+              {state === "sending" ? "Sending…" : "Send me times"}
+            </button>
+          </div>
+          {state === "error" && (
+            <p className="cp-send__error" role="alert">
+              Enter a work email address, like you@company.com, and try again.
+            </p>
+          )}
+        </form>
+      ) : (
+        <div className="cp-send__success" role="status">
+          <p className="cp-send__success-title">Request received.</p>
+          <p className="cp-send__success-text">
+            We&apos;ll send a few times to {email} shortly{name ? `, ${name.split(" ")[0]}` : ""}.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EstimateForm({ slug, repName, contactEmail }: { slug: string; repName: string; contactEmail?: string }) {
+  const { inputs, outputs } = useCalcState();
+  const [email, setEmail] = useState(contactEmail ?? "");
+  const [honeypot, setHoneypot] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const value = email.trim();
+    if (!EMAIL.test(value) || value.length > 254) {
+      setError("Enter a work email address, like you@company.com.");
+      return;
+    }
+    if (honeypot.trim()) {
+      // Bots fill the hidden field; pretend it worked and drop it.
+      setSent(value);
+      return;
+    }
+    setSending(true);
+    try {
+      track(slug, "estimate_submitted", {
+        name: "",
+        email: value.toLowerCase(),
+        inputs,
+        results: roundOutputs(outputs),
+        alias: "estimate_submitted",
+      });
+      setSent(value);
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm md:p-8">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h3 className="text-xl font-semibold text-slate-900">Walk through your numbers in 15 minutes</h3>
-          <p className="mt-1 text-sm text-slate-600">No deck. We look at your lanes, your volume and whether this is worth a pilot.</p>
-        </div>
-        {!open && (
-          <button type="button" onClick={reveal} className="inline-flex items-center justify-center rounded-lg bg-orange-500 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-orange-600">
-            Book 15 minutes
-          </button>
-        )}
-      </div>
-
-      {open && state !== "done" && (
-        <form onSubmit={submit} className="mt-6 grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
-          <input
-            required
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-            className="rounded-lg border border-slate-300 px-3 py-2.5 text-base text-slate-900 outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
-          />
-          <input
-            required
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Work email"
-            className="rounded-lg border border-slate-300 px-3 py-2.5 text-base text-slate-900 outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
-          />
-          <button type="submit" disabled={state === "sending"} className="rounded-lg bg-orange-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-60">
-            {state === "sending" ? "Sending…" : "Pick a time"}
-          </button>
-          {state === "error" && <div className="text-sm text-red-600 sm:col-span-3">Something went wrong. Please try again.</div>}
+    <div className="cp-send cp-reveal" data-estimate>
+      {sent === null ? (
+        <form className="cp-send__form" onSubmit={submit} noValidate>
+          <label className="cp-send__label" htmlFor="estimate-email">
+            Send me my estimate
+          </label>
+          <p className="cp-send__hint" id="estimate-hint">
+            We&apos;ll email you the numbers from the calculator above. No other signup.
+          </p>
+          <div className="cp-send__row">
+            <input
+              id="estimate-email"
+              className="cp-send__input"
+              type="email"
+              name="email"
+              autoComplete="email"
+              inputMode="email"
+              placeholder="you@company.com"
+              aria-describedby="estimate-hint estimate-error"
+              aria-invalid={error ? true : undefined}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+            <input className="cp-sr-only" type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" value={honeypot} onChange={(e) => setHoneypot(e.target.value)} />
+            <button className="cp-btn cp-btn--light cp-send__submit" type="submit" disabled={sending}>
+              {sending ? "Sending…" : "Send me my estimate"}
+            </button>
+          </div>
+          {error && (
+            <p className="cp-send__error" id="estimate-error" role="alert">
+              {error}
+            </p>
+          )}
         </form>
-      )}
-
-      {state === "done" && (
-        <div className="mt-6 rounded-lg bg-green-50 p-4 text-sm text-green-800">
-          Thanks{name ? `, ${name.split(" ")[0]}` : ""}. We&apos;ll send a few times to {email || "your inbox"} shortly.
+      ) : (
+        <div className="cp-send__success" role="status" tabIndex={-1}>
+          <p className="cp-send__success-title">Estimate saved.</p>
+          <p className="cp-send__success-text">
+            {repName || "Your Cartage contact"} will email your estimate to {sent} shortly.
+          </p>
         </div>
       )}
     </div>

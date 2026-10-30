@@ -83,8 +83,11 @@ async function researchAccount(account: Account, ctx: AgentContext): Promise<Acc
   let contact = fallbackContact;
   let brief: string;
   let missingInfo: string[];
+  const details: string[] = [];
 
   if (result) {
+    for (const v of result.validations) details.push(`${v.verdict}: ${v.signalKey} (${v.reason})`);
+    if (result.decisionMaker) details.push(`decision-maker: ${result.decisionMaker.name}, ${result.decisionMaker.title}: ${result.decisionMaker.why}`);
     const verdicts = new Map(result.validations.map((v) => [v.signalKey, v]));
     signals = account.signals
       .filter((s) => verdicts.get(s.key)?.verdict !== "reject")
@@ -102,7 +105,11 @@ async function researchAccount(account: Account, ctx: AgentContext): Promise<Acc
   } else {
     brief = templateBrief(account, contact);
     missingInfo = templateMissing({ ...account, contact });
+    details.push(`deterministic pass: ${signals.filter((s) => s.status === "verified").length} verified, ${signals.filter((s) => s.status === "hypothesis").length} hypotheses kept`);
+    if (contact) details.push(`decision-maker: ${contact.name}, ${contact.title} (best persona match)`);
   }
+  if (missingInfo.length) details.push(`missing: ${missingInfo.join("; ")}`);
+  ctx.activity(account.id, "research_completed", result ? "Research validated signals and picked the decision-maker (Claude)" : "Research built the brief from facts (template)", details);
 
   return markAgentRun(
     {

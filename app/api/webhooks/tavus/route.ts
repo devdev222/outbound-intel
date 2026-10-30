@@ -1,5 +1,6 @@
 import { error, json, safeEqual } from "@/lib/api";
 import { config } from "@/lib/config";
+import { logActivity } from "@/lib/engine/activity";
 import { tavusToRecord } from "@/lib/providers/video";
 import { getStore } from "@/lib/store";
 
@@ -33,7 +34,14 @@ export async function POST(req: Request) {
   const rec = tavusToRecord({ video_id: body.video_id, status: body.status as "ready" | "error" | "queued" | "generating" | "deleted", hosted_url: body.hosted_url, download_url: body.download_url, stream_url: body.stream_url, status_details: body.status_details });
   await store.upsertAccount({
     ...account,
-    campaign: { ...account.campaign, videoStatus: rec.status, videoUrl: rec.hostedUrl ?? account.campaign.videoUrl, videoThumbnailUrl: rec.thumbnailUrl ?? account.campaign.videoThumbnailUrl },
+    campaign: {
+      ...account.campaign,
+      videoStatus: rec.status,
+      videoUrl: rec.hostedUrl ?? account.campaign.videoUrl,
+      videoThumbnailUrl: rec.thumbnailUrl ?? account.campaign.videoThumbnailUrl,
+      videoStatusDetails: rec.statusDetails,
+    },
   });
+  await logActivity(store, account.id, "webhook", rec.status === "ready" ? "video_ready" : "video_failed", `Tavus callback: video ${rec.status}`, [rec.hostedUrl ?? "", rec.statusDetails ?? ""]);
   return json({ ok: true, matched: true, slug: account.slug, status: rec.status });
 }

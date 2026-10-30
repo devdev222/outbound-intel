@@ -183,7 +183,15 @@ function makeSignalAgent(def: {
         const others = account.signals.filter((s) => s.type !== def.type && !(def.type === "expansion" && (s.type === "funding" || s.type === "leadership")));
         const before = account.signals.filter((s) => !others.includes(s)).map((s) => s.key).sort().join(",");
         const after = fresh.map((s) => s.key).sort().join(",");
-        if (before !== after) changed++;
+        if (before !== after) {
+          changed++;
+          ctx.activity(
+            account.id,
+            "signals_updated",
+            fresh.length ? `${def.name}: ${fresh.length} ${def.type} signal${fresh.length === 1 ? "" : "s"} found` : `${def.name}: no ${def.type} signals found`,
+            fresh.map((s) => `${s.status}: ${s.label}${s.value ? ` (${s.value})` : ""}${s.evidence[0] ? ` <- ${s.evidence[0].title}` : ""}`),
+          );
+        }
         total += fresh.length;
         await ctx.store.upsertAccount(markAgentRun({ ...account, signals: [...others, ...fresh] }, def.id));
       }
@@ -259,6 +267,12 @@ export const icpAgent: AgentDefinition = {
       if (trained && fit < 20 && (status === "discovered" || status === "scored")) {
         status = "disqualified";
         parked++;
+        ctx.activity(account.id, "icp_parked", `ICP fit ${Math.round(fit)}/100: parked as non-fit`, [`industry ${account.industry}`, `${account.employeeCount} employees`]);
+      } else if (!account.agentRuns.icp) {
+        ctx.activity(account.id, "icp_profiled", `ICP fit ${Math.round(fit)}/100 against model v${ctx.model.version}`, [
+          contact ? `entry point: ${contact.name}, ${contact.title}` : "no contact in facts",
+          `persona to pursue: ${contact && ctx.model.icp.personas.some((p) => p.name === contact.title && p.lift >= 1) ? contact.title : topPersona}`,
+        ]);
       }
       await ctx.store.upsertAccount(
         markAgentRun(

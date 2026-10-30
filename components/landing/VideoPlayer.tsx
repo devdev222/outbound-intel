@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { track } from "./Tracker";
 
+export type VideoState = "pending" | "script_ready" | "awaiting_recording" | "rendering" | "ready" | "failed";
+
 export interface VideoPlayerProps {
   slug: string;
   script: string;
   videoUrl?: string;
   streamUrl?: string;
-  status: "pending" | "rendering" | "ready" | "failed";
+  status: VideoState;
   thumbnailUrl?: string;
   contactFirstName: string;
   companyName: string;
+  repName?: string;
 }
 
 const MOCK_DURATION_MS = 20_000;
@@ -21,15 +24,31 @@ function isMockUrl(url?: string): boolean {
   return !url || url.includes("/for/");
 }
 
+/** Loom / YouTube / Vimeo links become iframes; anything else is treated as a direct video file (mirrors Opening.astro). */
+function embedFor(url: string): { kind: "iframe" | "video"; src: string } {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    if (host === "loom.com") return { kind: "iframe", src: `https://www.loom.com/embed/${u.pathname.split("/").pop()}` };
+    if (host === "youtu.be") return { kind: "iframe", src: `https://www.youtube-nocookie.com/embed${u.pathname}` };
+    if (host === "youtube.com" && u.searchParams.get("v")) return { kind: "iframe", src: `https://www.youtube-nocookie.com/embed/${u.searchParams.get("v")}` };
+    if (host === "vimeo.com") return { kind: "iframe", src: `https://player.vimeo.com/video${u.pathname}` };
+  } catch {
+    /* fall through */
+  }
+  return { kind: "video", src: url };
+}
+
 /**
- * Personalized video. Mock mode plays the script as captions over a poster so
- * engagement tracking works without a Tavus account; real mode plays the
- * rendered video. Both fire video_play / video_25 / video_50 / video_75 /
- * video_complete once, and video_rewatch on a replay after completion.
+ * The video slot of the opening section. Real mode plays the rendered or
+ * rep-recorded clip; mock mode plays the script as captions so engagement
+ * tracking works before Tavus is connected. Both fire video_play /
+ * video_25 / video_50 / video_75 / video_complete once, and video_rewatch on
+ * a replay after completion.
  */
 export default function VideoPlayer(props: VideoPlayerProps) {
-  const { slug, script, videoUrl, streamUrl, status, thumbnailUrl, companyName, contactFirstName } = props;
-  const mock = isMockUrl(videoUrl) && !streamUrl;
+  const { slug, script, videoUrl, streamUrl, status, thumbnailUrl, companyName, contactFirstName, repName } = props;
+  const real = !isMockUrl(videoUrl) || Boolean(streamUrl);
   const firedRef = useRef<Set<string>>(new Set());
   const completedOnceRef = useRef(false);
 
@@ -63,55 +82,61 @@ export default function VideoPlayer(props: VideoPlayerProps) {
     }
   }, [slug]);
 
-  if (!mock && status === "ready") {
-    return <RealPlayer src={streamUrl ?? videoUrl ?? ""} poster={thumbnailUrl} onPlayStart={onPlayStart} onProgress={fireThreshold} />;
+  if (real && status === "ready") {
+    const embed = embedFor(streamUrl ?? videoUrl ?? "");
+    if (embed.kind === "iframe") {
+      return (
+        <div className="cp-video">
+          <iframe src={embed.src} title={`A short video for ${companyName}`} loading="lazy" allow="autoplay; fullscreen; picture-in-picture" allowFullScreen />
+        </div>
+      );
+    }
+    return (
+      <div className="cp-video">
+        <video
+          controls
+          playsInline
+          preload="metadata"
+          src={embed.src}
+          poster={thumbnailUrl}
+          aria-label={`A short video for ${companyName}`}
+          onPlay={onPlayStart}
+          onTimeUpdate={(e) => {
+            const v = e.currentTarget;
+            if (!v.duration || !Number.isFinite(v.duration)) return;
+            fireThreshold((v.currentTime / v.duration) * 100);
+          }}
+          onEnded={() => fireThreshold(100)}
+        />
+      </div>
+    );
   }
 
-  if (!mock && (status === "pending" || status === "rendering")) {
+  if (status === "awaiting_recording") {
     return (
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-6">
-        <div className="flex items-center gap-3 text-sm text-slate-600">
-          <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-orange-500" />
-          Video rendering. The transcript is below while it finishes.
+      <div className="cp-video" aria-label={`A video for ${companyName} is on its way`}>
+        <div className="cp-video__state">
+          <span className="cp-video__dot" aria-hidden="true" />
+          <p>A short video from {repName || "your Cartage contact"} is on its way. Here is what it covers:</p>
+          <p className="cp-video__transcript">{script}</p>
         </div>
-        <p className="mt-4 text-base leading-7 text-slate-800">{script}</p>
+      </div>
+    );
+  }
+
+  if (real && (status === "pending" || status === "script_ready" || status === "rendering")) {
+    return (
+      <div className="cp-video" aria-label="Video rendering">
+        <div className="cp-video__state">
+          <span className="cp-video__dot" aria-hidden="true" />
+          <p>Video rendering. The transcript is here while it finishes.</p>
+          <p className="cp-video__transcript">{script}</p>
+        </div>
       </div>
     );
   }
 
   return <MockPlayer script={script} companyName={companyName} contactFirstName={contactFirstName} onPlayStart={onPlayStart} onProgress={fireThreshold} />;
-}
-
-// --- Real <video> -------------------------------------------------------------
-
-function RealPlayer({
-  src,
-  poster,
-  onPlayStart,
-  onProgress,
-}: {
-  src: string;
-  poster?: string;
-  onPlayStart: () => void;
-  onProgress: (percent: number) => void;
-}) {
-  return (
-    <video
-      className="aspect-video w-full rounded-xl border border-slate-200 bg-black"
-      controls
-      playsInline
-      preload="metadata"
-      src={src}
-      poster={poster}
-      onPlay={onPlayStart}
-      onTimeUpdate={(e) => {
-        const v = e.currentTarget;
-        if (!v.duration || !Number.isFinite(v.duration)) return;
-        onProgress((v.currentTime / v.duration) * 100);
-      }}
-      onEnded={() => onProgress(100)}
-    />
-  );
 }
 
 // --- Mock player (script as captions) ----------------------------------------
@@ -140,12 +165,7 @@ function MockPlayer({
 
   useEffect(() => {
     if (!playing) return;
-    timerRef.current = window.setInterval(() => {
-      setElapsed((prev) => {
-        const next = Math.min(MOCK_DURATION_MS, prev + TICK_MS);
-        return next;
-      });
-    }, TICK_MS);
+    timerRef.current = window.setInterval(() => setElapsed((prev) => Math.min(MOCK_DURATION_MS, prev + TICK_MS)), TICK_MS);
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
       timerRef.current = null;
@@ -177,10 +197,9 @@ function MockPlayer({
   const total = Math.round(MOCK_DURATION_MS / 1000);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-sm">
+    <div className="cp-video">
       <div
-        className="relative aspect-video w-full select-none"
-        style={{ background: "radial-gradient(120% 90% at 20% 10%, #1f2937 0%, #0b0f14 60%, #000 100%)" }}
+        className="cp-video__stage"
         role="button"
         tabIndex={0}
         aria-label={playing ? "Pause video" : "Play video"}
@@ -192,59 +211,64 @@ function MockPlayer({
           }
         }}
       >
-        {/* Speaker placeholder */}
-        <div className="absolute left-5 top-5 flex items-center gap-3 text-xs uppercase tracking-wider text-slate-400">
-          <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-orange-500/90 text-[11px] font-bold text-slate-950">AI</span>
-          <span>Personal note for {companyName}</span>
+        <div className="cp-video__badge">
+          <span aria-hidden="true">
+            <WilsonGlyph size={16} />
+          </span>
+          <span>A note for {companyName}</span>
         </div>
 
         {!playing && !done && elapsed === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
-            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-white/95 shadow-lg transition hover:scale-105">
-              <svg width="30" height="30" viewBox="0 0 24 24" fill="#0b0f14" aria-hidden="true">
+          <div className="cp-video__center">
+            <span className="cp-video__play" aria-hidden="true">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M8 5v14l11-7z" />
               </svg>
-            </div>
-            <div className="text-sm text-slate-300">Hi {contactFirstName}, 20 seconds on what we noticed</div>
+            </span>
+            <span className="cp-video__hint">Hi {contactFirstName}, 20 seconds on what we noticed</span>
           </div>
         )}
 
         {(playing || elapsed > 0) && (
-          <div className="absolute inset-x-0 bottom-0 p-5 sm:p-8">
-            <p className="text-balance text-lg font-medium leading-relaxed text-white drop-shadow sm:text-2xl">
-              {words.slice(0, visibleWords).join(" ")}
-              {playing && <span className="ml-1 inline-block h-5 w-[2px] animate-pulse bg-orange-400 align-middle" />}
-            </p>
-          </div>
+          <p className="cp-video__caption">
+            {words.slice(0, visibleWords).join(" ")}
+            {playing && <span className="cp-video__cursor" aria-hidden="true" />}
+          </p>
         )}
 
         {!playing && elapsed > 0 && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/90 shadow-lg">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="#0b0f14" aria-hidden="true">
+          <div className="cp-video__center">
+            <span className="cp-video__play" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                 {done ? <path d="M12 5V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z" /> : <path d="M8 5v14l11-7z" />}
               </svg>
-            </div>
+            </span>
           </div>
         )}
       </div>
 
-      <div className="flex items-center gap-3 bg-slate-900 px-4 py-3 text-xs text-slate-300">
-        <button
-          type="button"
-          onClick={toggle}
-          className="rounded-md bg-white/10 px-2.5 py-1 font-medium text-white hover:bg-white/20"
-          aria-label={playing ? "Pause" : done ? "Replay" : "Play"}
-        >
+      <div className="cp-video__bar">
+        <button type="button" className="cp-video__ctrl" onClick={toggle} aria-label={playing ? "Pause" : done ? "Replay" : "Play"}>
           {playing ? "Pause" : done ? "Replay" : "Play"}
         </button>
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
-          <div className="h-full rounded-full bg-orange-500 transition-[width] duration-100" style={{ width: `${percent}%` }} />
+        <div className="cp-video__track">
+          <div className="cp-video__fill" style={{ width: `${percent}%` }} />
         </div>
-        <span className="tabular-nums">
+        <span>
           0:{String(seconds).padStart(2, "0")} / 0:{String(total).padStart(2, "0")}
         </span>
       </div>
     </div>
+  );
+}
+
+export function WilsonGlyph({ size = 40, className }: { size?: number; className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 51 51" width={size} height={size} aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M34.545 11.84h2.625v9.14h-2.625zm-8.265 0h2.715L23.27 28.85h-2.715zm-13.29 0h2.625v9.14H12.99zm12.09 26.14c-4.95 0-9.745-.935-14.265-2.775l1.025-2.33c4.195 1.71 8.65 2.575 13.24 2.575s9.045-.865 13.24-2.575l1.025 2.33A37.6 37.6 0 0 1 25.08 37.98"
+      />
+    </svg>
   );
 }

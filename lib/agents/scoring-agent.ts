@@ -102,6 +102,20 @@ async function scoreAccount(account: Account, ctx: AgentContext, explainWithLlm:
   let status = account.status;
   if (status === "discovered" || status === "scored" || status === "qualified") status = qualifies ? "qualified" : "scored";
 
+  const before = account.scores?.total;
+  if (before !== scores.total || account.modelVersion !== ctx.model.version || status !== account.status) {
+    ctx.activity(
+      account.id,
+      "score_updated",
+      `Score ${before === undefined ? "–" : before} -> ${scores.total} (model v${ctx.model.version})${status !== account.status ? `; status ${account.status} -> ${status}` : ""}`,
+      [
+        `signals ${scores.signal} × ${ctx.model.weights.signal}, ICP ${scores.icp} × ${ctx.model.weights.icp}, pain ${scores.pain} × ${ctx.model.weights.pain}, timing ${scores.timing} × ${ctx.model.weights.timing}, access ${scores.access} × ${ctx.model.weights.access}`,
+        explainWithLlm ? "explanation written by Claude" : "explanation from template",
+        `priority ${priority} (engagement ${account.engagementScore})`,
+      ],
+    );
+  }
+
   return markAgentRun(
     {
       ...account,

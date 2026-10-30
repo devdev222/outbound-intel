@@ -14,7 +14,10 @@ export interface AgentContext {
   providers: Providers;
   model: ScoringModel;
   batchSize: number;
+  /** Run log line (shows on the Agents page). */
   log: (line: string) => void;
+  /** Per-account audit entry (shows on the account page). Batched and flushed when the run ends. */
+  activity: (accountId: string, action: string, summary: string, details?: string[]) => void;
 }
 
 export interface AgentResult {

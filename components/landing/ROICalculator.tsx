@@ -1,137 +1,218 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { RoiDefaults } from "@/lib/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useCalcState } from "./CalcState";
+import {
+  compute,
+  currencySymbol,
+  explain,
+  formatHours,
+  formatMoney,
+  isCurrency,
+  parseField,
+  roundOutputs,
+  workflowLine,
+  type CalcInputs,
+  type NumericField,
+  type WorkflowTag,
+} from "./calc";
 import { track } from "./Tracker";
 
-const WEEKS_PER_MONTH = 4.33;
-const SAVINGS_RATE = 0.6;
-
-function fmtInt(n: number): string {
-  return Math.round(n).toLocaleString();
-}
-
-function fmtMoney(n: number): string {
-  return `$${Math.round(n).toLocaleString()}`;
-}
-
 /**
- * Interactive ROI calculator prefilled with the account's defaults. Inputs are
- * tracked (debounced) so reps see what the prospect actually entered.
+ * Time / value calculator: a React port of cartage-pages' Calculator.astro +
+ * scripts/calculator.ts. Same fields, limits, slider ranges, formatting and
+ * "Why this estimate" sentence. Engine events:
+ *   calculator_input      { field, value, alias: "calc_input_changed" }   (debounced 600ms per field)
+ *   calculator_completed  { ...inputs, ...results, alias: "calc_engaged" } (once, on first interaction)
  */
-export default function ROICalculator({ slug, defaults }: { slug: string; defaults: RoiDefaults }) {
-  const [shipments, setShipments] = useState(defaults.shipmentsPerMonth);
-  const [minutes, setMinutes] = useState(defaults.minutesPerShipment);
-  const [hourly, setHourly] = useState(defaults.hourlyCost);
-  const [coordinators, setCoordinators] = useState(defaults.coordinators);
-  const [showAssumptions, setShowAssumptions] = useState(false);
 
-  const touchedRef = useRef(false);
-  const completedRef = useRef(false);
-  const pricingRef = useRef(false);
-  const inputTimer = useRef<number | null>(null);
-  const completeTimer = useRef<number | null>(null);
+const FIELDS: { field: NumericField; label: string; unit: string; sliderMax: number; step: number }[] = [
+  { field: "shipments_per_month", label: "Shipments per month", unit: "per month", sliderMax: 5000, step: 10 },
+  { field: "minutes_per_shipment", label: "Manual coordination minutes per shipment", unit: "min", sliderMax: 120, step: 1 },
+  { field: "automation_percent", label: "Percent of that work Cartage could handle", unit: "%", sliderMax: 100, step: 1 },
+  { field: "hourly_cost", label: "Fully loaded hourly labor cost", unit: "/ hour", sliderMax: 150, step: 1 },
+];
 
-  const hoursPerWeek = (shipments * minutes) / 60 / WEEKS_PER_MONTH;
-  const hoursSaved = hoursPerWeek * SAVINGS_RATE;
-  const annualSaved = hoursSaved * 52 * hourly;
-  const headcountAvoided = Math.round((hoursSaved / 40) * 10) / 10;
-  const coveragePct = coordinators > 0 ? Math.min(100, Math.round((hoursPerWeek / (coordinators * 40)) * 100)) : 0;
+const COMMON = ["USD", "CAD", "MXN", "EUR", "GBP", "AUD"];
 
-  const onChange = (field: string, value: number, setter: (n: number) => void) => {
-    setter(value);
-    touchedRef.current = true;
-    if (inputTimer.current) window.clearTimeout(inputTimer.current);
-    inputTimer.current = window.setTimeout(() => track(slug, "calculator_input", { field, value }), 600);
-  };
+function currencyOptions(): { code: string; name: string }[] {
+  let all: string[] = COMMON;
+  try {
+    const intl = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
+    if (intl.supportedValuesOf) all = intl.supportedValuesOf("currency");
+  } catch {
+    /* older runtimes */
+  }
+  let names: Intl.DisplayNames | null = null;
+  try {
+    names = new Intl.DisplayNames(["en"], { type: "currency" });
+  } catch {
+    names = null;
+  }
+  return [...COMMON, ...all.filter((c) => !COMMON.includes(c))].map((code) => ({ code, name: names?.of(code) ?? code }));
+}
+
+function sliderBackground(value: number, max: number): string {
+  const pct = (value / (max || 1)) * 100;
+  return `linear-gradient(to right, var(--color-ink) ${pct}%, var(--color-surface-strong) ${pct}%) center / 100% 2px no-repeat`;
+}
+
+export interface ROICalculatorProps {
+  slug: string;
+  workflowTags: WorkflowTag[];
+}
+
+export default function ROICalculator({ slug, workflowTags }: ROICalculatorProps) {
+  const { inputs, outputs, setInputs } = useCalcState();
+  const [drafts, setDrafts] = useState<Record<NumericField, string>>({
+    shipments_per_month: String(inputs.shipments_per_month),
+    minutes_per_shipment: String(inputs.minutes_per_shipment),
+    automation_percent: String(inputs.automation_percent),
+    hourly_cost: String(inputs.hourly_cost),
+  });
+  const engagedRef = useRef(false);
+  const timersRef = useRef<Map<string, number>>(new Map());
+  const currencies = useMemo(currencyOptions, []);
+  const symbol = currencySymbol(inputs.currency);
 
   useEffect(() => {
-    if (!touchedRef.current || completedRef.current) return;
-    if (completeTimer.current) window.clearTimeout(completeTimer.current);
-    completeTimer.current = window.setTimeout(() => {
-      if (completedRef.current) return;
-      completedRef.current = true;
-      track(slug, "calculator_completed", { shipmentsPerMonth: shipments, hoursSaved: Math.round(hoursSaved) });
-    }, 1500);
+    const timers = timersRef.current;
     return () => {
-      if (completeTimer.current) window.clearTimeout(completeTimer.current);
+      for (const t of timers.values()) window.clearTimeout(t);
     };
-  }, [slug, shipments, minutes, hourly, coordinators, hoursSaved]);
+  }, []);
 
-  const toggleAssumptions = () => {
-    const next = !showAssumptions;
-    setShowAssumptions(next);
-    if (next && !pricingRef.current) {
-      pricingRef.current = true;
-      track(slug, "pricing_viewed", { source: "roi_assumptions" });
+  const changed = (field: string, value: number | string, next: CalcInputs) => {
+    if (!engagedRef.current) {
+      engagedRef.current = true;
+      track(slug, "calculator_completed", { ...next, ...roundOutputs(compute(next)), alias: "calc_engaged" });
     }
+    window.clearTimeout(timersRef.current.get(field));
+    timersRef.current.set(
+      field,
+      window.setTimeout(() => track(slug, "calculator_input", { field, value, alias: "calc_input_changed" }), 600),
+    );
   };
 
-  const field = (label: string, value: number, setter: (n: number) => void, key: string, opts: { min?: number; step?: number; prefix?: string; suffix?: string } = {}) => (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-slate-700">{label}</span>
-      <div className="flex items-center rounded-lg border border-slate-300 bg-white focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-500/20">
-        {opts.prefix && <span className="pl-3 text-slate-500">{opts.prefix}</span>}
-        <input
-          type="number"
-          inputMode="decimal"
-          min={opts.min ?? 0}
-          step={opts.step ?? 1}
-          value={Number.isFinite(value) ? value : ""}
-          onChange={(e) => onChange(key, Math.max(0, Number(e.target.value) || 0), setter)}
-          className="w-full bg-transparent px-3 py-2.5 text-base text-slate-900 outline-none"
-        />
-        {opts.suffix && <span className="pr-3 text-sm text-slate-500">{opts.suffix}</span>}
-      </div>
-    </label>
-  );
+  const commit = (field: NumericField, value: number) => {
+    if (value === inputs[field]) return;
+    const next = { ...inputs, [field]: value };
+    setInputs(next);
+    changed(field, value, next);
+  };
+
+  const onText = (field: NumericField, raw: string) => {
+    setDrafts((d) => ({ ...d, [field]: raw }));
+    // Mid-edit states (cleared field, a lone ".") keep the last valid value until the visitor finishes.
+    if (raw.trim() === "" || raw.trim() === ".") return;
+    const parsed = parseField(field, raw);
+    if (parsed === null) {
+      setDrafts((d) => ({ ...d, [field]: String(inputs[field]) }));
+      return;
+    }
+    const typed = Number(raw.replace(/[,\s]/g, ""));
+    if (Number.isFinite(typed) && typed > parsed) setDrafts((d) => ({ ...d, [field]: String(parsed) })); // clamped
+    commit(field, parsed);
+  };
+
+  const onBlur = (field: NumericField) => {
+    if (parseField(field, drafts[field]) === null) setDrafts((d) => ({ ...d, [field]: String(inputs[field]) }));
+  };
+
+  const onSlider = (field: NumericField, raw: string) => {
+    const v = Number(raw);
+    setDrafts((d) => ({ ...d, [field]: String(v) }));
+    commit(field, v);
+  };
+
+  const onCurrency = (code: string) => {
+    if (!isCurrency(code)) return;
+    const next = { ...inputs, currency: code.toUpperCase() };
+    setInputs(next);
+    changed("currency", next.currency, next);
+  };
+
+  const stats = [
+    { key: "monthly_hours_recovered", label: "Hours recovered per month", value: formatHours(outputs.monthly_hours_recovered) },
+    { key: "annual_hours_recovered", label: "Hours recovered per year", value: formatHours(outputs.annual_hours_recovered) },
+    { key: "monthly_capacity_value", label: "Monthly capacity value", value: formatMoney(outputs.monthly_capacity_value, inputs.currency) },
+    { key: "annual_capacity_value", label: "Annual capacity value", value: formatMoney(outputs.annual_capacity_value, inputs.currency) },
+  ];
 
   return (
-    <div className="grid gap-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm md:grid-cols-5 md:p-8">
-      <div className="grid gap-4 md:col-span-3 md:grid-cols-2">
-        {field("Shipments per month", shipments, setShipments, "shipmentsPerMonth", { step: 10 })}
-        {field("Coordination minutes per shipment", minutes, setMinutes, "minutesPerShipment", { suffix: "min" })}
-        {field("Loaded hourly cost of coordination", hourly, setHourly, "hourlyCost", { prefix: "$", suffix: "/hr" })}
-        {field("Coordinators on the team today", coordinators, setCoordinators, "coordinators", { step: 1 })}
-        <div className="md:col-span-2">
-          <button type="button" onClick={toggleAssumptions} className="text-sm font-medium text-orange-600 underline-offset-4 hover:underline" aria-expanded={showAssumptions}>
-            {showAssumptions ? "Hide" : "How we estimate this"}
-          </button>
-          {showAssumptions && (
-            <ul className="mt-3 list-disc space-y-1 pl-5 text-sm leading-6 text-slate-600">
-              <li>Current coordination hours per week = shipments x minutes per shipment / 60 / 4.33 weeks.</li>
-              <li>We assume a managed program removes about 60% of that time (tendering, tracking, exception follow-up). Customers in the case studies on this page landed between 55% and 70%.</li>
-              <li>Annual cost saved = hours saved per week x 52 x loaded hourly cost.</li>
-              <li>Headcount avoided = hours saved per week / 40. Most teams redeploy rather than reduce.</li>
-              <li>Freight cost savings (typically 8 to 12% per shipment) are not included in these numbers.</li>
-            </ul>
-          )}
+    <div className="cp-calc__grid" data-calculator>
+      <form className="cp-calc__inputs" noValidate onSubmit={(e) => e.preventDefault()}>
+        {FIELDS.map((f) => {
+          const max = Math.max(f.sliderMax, inputs[f.field]);
+          return (
+            <div className="cp-field" key={f.field}>
+              <label className="cp-field__label" htmlFor={`calc-${f.field}`}>
+                {f.label}
+              </label>
+              <div className="cp-field__control">
+                {f.field === "hourly_cost" && <span className="cp-field__prefix">{symbol}</span>}
+                <input
+                  id={`calc-${f.field}`}
+                  className="cp-field__input"
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={drafts[f.field]}
+                  onChange={(e) => onText(f.field, e.target.value)}
+                  onBlur={() => onBlur(f.field)}
+                />
+                <span className="cp-field__unit">{f.unit}</span>
+              </div>
+              <input
+                className="cp-field__slider"
+                type="range"
+                min={0}
+                max={max}
+                step={f.step}
+                value={Math.min(inputs[f.field], max)}
+                onChange={(e) => onSlider(f.field, e.target.value)}
+                aria-label={`${f.label} slider`}
+                tabIndex={-1}
+                style={{ background: sliderBackground(Math.min(inputs[f.field], max), max) }}
+              />
+            </div>
+          );
+        })}
+        <div className="cp-field">
+          <label className="cp-field__label" htmlFor="calc-currency">
+            Currency
+          </label>
+          <div className="cp-field__control cp-field__control--select">
+            <select id="calc-currency" className="cp-field__input" value={inputs.currency} onChange={(e) => onCurrency(e.target.value)}>
+              {currencies.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.code} · {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-      </div>
+      </form>
 
-      <div className="rounded-xl bg-slate-50 p-5 md:col-span-2">
-        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Your estimate</div>
-        <dl className="mt-4 space-y-4">
-          <div>
-            <dt className="text-sm text-slate-600">Coordination hours today</dt>
-            <dd className="text-2xl font-semibold text-slate-900">
-              {fmtInt(hoursPerWeek)} <span className="text-sm font-normal text-slate-500">hrs / week</span>
-            </dd>
-            <div className="mt-1 text-xs text-slate-500">{coveragePct}% of your coordinators&apos; capacity</div>
-          </div>
-          <div>
-            <dt className="text-sm text-slate-600">Hours back per week</dt>
-            <dd className="text-3xl font-bold text-orange-600">{fmtInt(hoursSaved)}</dd>
-          </div>
-          <div>
-            <dt className="text-sm text-slate-600">Annual coordination cost saved</dt>
-            <dd className="text-2xl font-semibold text-slate-900">{fmtMoney(annualSaved)}</dd>
-          </div>
-          <div>
-            <dt className="text-sm text-slate-600">Coordinator headcount avoided</dt>
-            <dd className="text-2xl font-semibold text-slate-900">{headcountAvoided.toFixed(1)} FTE</dd>
-          </div>
-        </dl>
+      <div className="cp-calc__results">
+        <div className="cp-calc__outputs">
+          {stats.map((o, i) => (
+            <div className={`cp-stat${i === 3 ? " cp-stat--feature" : ""}`} key={o.key}>
+              <p className="cp-stat__label">{o.label}</p>
+              <p className="cp-stat__value" data-output={o.key}>
+                {o.value}
+              </p>
+            </div>
+          ))}
+        </div>
+        <div className="cp-why-box">
+          <p className="cp-why-box__title">Why this estimate</p>
+          <p className="cp-why-box__text" aria-live="polite">
+            {explain(inputs, outputs)}
+          </p>
+          <p className="cp-why-box__tags">{workflowLine(workflowTags)}</p>
+        </div>
       </div>
     </div>
   );

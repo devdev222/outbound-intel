@@ -78,3 +78,18 @@ export function scoreColor(total: number): string {
   if (total >= 50) return "var(--warn)";
   return "var(--muted)";
 }
+
+export function outreachPillClass(status: string): string {
+  switch (status) {
+    case "sent":
+      return "pill pill-good";
+    case "scheduled":
+      return "pill pill-info";
+    case "awaiting_rep":
+      return "pill pill-warn";
+    case "failed":
+      return "pill pill-bad";
+    default:
+      return "pill";
+  }
+}

@@ -54,7 +54,7 @@ export const config = {
     /** Data source Jerry uses as a tool to verify phones / match LinkedIn. Jerry itself is an agent, not a provider. */
     enrichment: pick("ENRICHMENT_PROVIDER", ["mock", "clay", "http"] as const, "mock"),
     video: pick("VIDEO_PROVIDER", ["mock", "tavus"] as const, "mock"),
-    outreach: pick("OUTREACH_PROVIDER", ["mock", "sequencer"] as const, "mock"),
+    outreach: pick("OUTREACH_PROVIDER", ["mock", "resend", "sequencer"] as const, "mock"),
     dialer: pick("DIALER_PROVIDER", ["mock", "cartage"] as const, "mock"),
     analytics: pick("ANALYTICS_PROVIDER", ["none", "posthog"] as const, "none"),
     alerts: pick("ALERT_PROVIDER", ["console", "slack"] as const, "console"),
@@ -115,6 +115,16 @@ export const config = {
     webhookSecret: env("TAVUS_WEBHOOK_SECRET"),
   },
   sequencer: { apiUrl: env("SEQUENCER_API_URL"), apiKey: env("SEQUENCER_API_KEY") },
+  resend: {
+    apiKey: env("RESEND_API_KEY"),
+    /** Verified sender, e.g. "Jerry at Cartage <jerry@mail.cartage.ai>". */
+    from: env("RESEND_FROM"),
+    replyTo: env("RESEND_REPLY_TO"),
+    /** Signing secret (whsec_...) from the Resend webhook settings. */
+    webhookSecret: env("RESEND_WEBHOOK_SECRET"),
+    /** Where the Integrations page "send test email" goes. */
+    testTo: env("RESEND_TEST_TO"),
+  },
   dialer: { apiUrl: env("DIALER_API_URL"), apiKey: env("DIALER_API_KEY") },
   posthog: {
     apiKey: env("POSTHOG_API_KEY") || env("NEXT_PUBLIC_POSTHOG_KEY"),

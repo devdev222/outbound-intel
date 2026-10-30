@@ -44,6 +44,22 @@ export function hash32(input: string): number {
   return h >>> 0;
 }
 
+/**
+ * Unguessable-enough page token appended to personalized URLs (/for/{slug}-{token}),
+ * derived from the account id so it never has to be stored separately.
+ */
+export function pageTokenFor(accountId: string): string {
+  const a = hash32(`page:${accountId}`).toString(36);
+  const b = hash32(`token:${accountId}`).toString(36);
+  return (a + b).slice(0, 8).padEnd(8, "0");
+}
+
+/** Split a /for/ path segment into slug and optional token. "acme-co-ab12cd34" -> { slug: "acme-co", token: "ab12cd34" }. */
+export function parsePageParam(param: string): { slug: string; token: string | null } {
+  const m = param.match(/^(.*)-([a-z0-9]{8})$/);
+  return m ? { slug: m[1], token: m[2] } : { slug: param, token: null };
+}
+
 /** Small seeded PRNG (mulberry32) so synthetic data is reproducible. */
 export function makeRng(seed: number): () => number {
   let a = seed >>> 0;

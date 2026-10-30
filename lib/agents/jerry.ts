@@ -4,6 +4,7 @@ import { z } from "zod";
 import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
 import { describeEvent } from "@/lib/engine/engagement";
+import { adaptNextTouch } from "@/lib/engine/outreach";
 import { generateStructured } from "@/lib/llm";
 import type { Account, Alert, CallQueueItem, HotLeadAlert, Person } from "@/lib/types";
 import { nowIso, uuid } from "@/lib/util";
@@ -182,10 +183,24 @@ export async function activateAccount(account: Account, ctx: AgentContext): Prom
       log(`jerry: dialer failed: ${(err as Error).message}`);
     }
   }
-  providers.outreach.adaptSequence(account, payload.triggeredBy).catch((err) => log(`jerry: sequencer adapt failed: ${(err as Error).message}`));
+  // Adapt the running sequence: the Sequencer does it itself; otherwise rewrite the next scheduled email here.
+  let adaptedNote = "";
+  if (providers.outreach.ownsScheduling) {
+    providers.outreach.adaptSequence(account, payload.triggeredBy).catch((err) => log(`jerry: sequencer adapt failed: ${(err as Error).message}`));
+    adaptedNote = "sequencer asked to adapt the next touch";
+  } else {
+    const adapted = await adaptNextTouch(store, account, payload.triggeredBy, engagement).catch(() => null);
+    if (adapted) adaptedNote = `next email (step ${adapted.step}) rewritten to reference the engagement and moved up`;
+  }
 
   const alert: Alert = { id: uuid(), accountId: account.id, kind: "hot_lead", payload, deliveredVia, createdAt: nowIso() };
   await store.insertAlert(alert);
+  ctx.activity(account.id, "rep_activated", `Jerry activated the rep: ${payload.triggeredBy}`, [
+    `alert delivered via ${deliveredVia.join(", ") || "nothing (check ALERT_PROVIDER)"}`,
+    `talk track: "${talkTrack}"`,
+    ...enrichmentLines.map((l) => `enrichment: ${l}`),
+    adaptedNote,
+  ]);
 
   // 5. Clear the flag.
   const updated = await store.upsertAccount(

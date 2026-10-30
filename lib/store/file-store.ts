@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
   Account,
+  ActivityEntry,
   AgentId,
   AgentRun,
   AgentState,
@@ -24,6 +25,7 @@ export type Collection =
   | "alerts"
   | "call_queue"
   | "outreach"
+  | "activity"
   | "agent_runs"
   | "agent_state";
 
@@ -226,10 +228,42 @@ export class FileStore implements Store {
     }));
   }
 
-  async listOutreach(opts: { accountId?: string; limit?: number } = {}): Promise<OutreachTouch[]> {
+  updateOutreach(touch: OutreachTouch): Promise<void> {
+    return this.mutate<OutreachTouch, void>("outreach", (rows) => {
+      const idx = rows.findIndex((t) => t.id === touch.id);
+      if (idx >= 0) rows[idx] = touch;
+      else rows.push(touch);
+      return { rows, result: undefined };
+    });
+  }
+
+  async getOutreach(id: string): Promise<OutreachTouch | null> {
+    return (await this.read<OutreachTouch>("outreach")).find((t) => t.id === id) ?? null;
+  }
+
+  async listOutreach(opts: { accountId?: string; status?: OutreachTouch["status"]; dueBefore?: string; limit?: number } = {}): Promise<OutreachTouch[]> {
     let rows = await this.read<OutreachTouch>("outreach");
     if (opts.accountId) rows = rows.filter((t) => t.accountId === opts.accountId);
+    if (opts.status) rows = rows.filter((t) => t.status === opts.status);
+    if (opts.dueBefore) rows = rows.filter((t) => t.scheduledFor <= opts.dueBefore!);
     rows.sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
+    return opts.limit ? rows.slice(0, opts.limit) : rows;
+  }
+
+  // Activity ------------------------------------------------------------------
+
+  insertActivity(entries: ActivityEntry[]): Promise<void> {
+    if (!entries.length) return Promise.resolve();
+    return this.mutate<ActivityEntry, void>("activity", (rows) => {
+      const next = [...rows, ...entries];
+      return { rows: next.length > 20000 ? next.slice(next.length - 20000) : next, result: undefined };
+    });
+  }
+
+  async listActivity(opts: { accountId?: string; limit?: number } = {}): Promise<ActivityEntry[]> {
+    let rows = await this.read<ActivityEntry>("activity");
+    if (opts.accountId) rows = rows.filter((e) => e.accountId === opts.accountId);
+    rows.sort((a, b) => b.at.localeCompare(a.at));
     return opts.limit ? rows.slice(0, opts.limit) : rows;
   }
 
@@ -285,6 +319,7 @@ export class FileStore implements Store {
       "alerts",
       "call_queue",
       "outreach",
+      "activity",
       "agent_runs",
       "agent_state",
     ];

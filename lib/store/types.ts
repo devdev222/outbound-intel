@@ -1,5 +1,6 @@
 import type {
   Account,
+  ActivityEntry,
   AgentId,
   AgentRun,
   AgentState,
@@ -55,7 +56,13 @@ export interface Store {
 
   // Outreach log
   insertOutreach(touches: OutreachTouch[]): Promise<void>;
-  listOutreach(opts?: { accountId?: string; limit?: number }): Promise<OutreachTouch[]>;
+  updateOutreach(touch: OutreachTouch): Promise<void>;
+  getOutreach(id: string): Promise<OutreachTouch | null>;
+  listOutreach(opts?: { accountId?: string; status?: OutreachTouch["status"]; dueBefore?: string; limit?: number }): Promise<OutreachTouch[]>;
+
+  // Per-account activity (team audit trail)
+  insertActivity(entries: ActivityEntry[]): Promise<void>;
+  listActivity(opts?: { accountId?: string; limit?: number }): Promise<ActivityEntry[]>;
 
   // Agent team runtime
   insertAgentRun(run: AgentRun): Promise<AgentRun>;

@@ -51,23 +51,23 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-label="${escapeXml(headline)}">
   <defs>
     <radialGradient id="bg" cx="20%" cy="10%" r="110%">
-      <stop offset="0%" stop-color="#1f2937"/>
-      <stop offset="55%" stop-color="#0b0f14"/>
-      <stop offset="100%" stop-color="#000000"/>
+      <stop offset="0%" stop-color="#3a342d"/>
+      <stop offset="55%" stop-color="#25211c"/>
+      <stop offset="100%" stop-color="#14110d"/>
     </radialGradient>
   </defs>
   <rect width="1200" height="675" fill="url(#bg)"/>
-  <rect x="48" y="48" width="18" height="18" rx="4" fill="#f97316"/>
-  <text x="78" y="64" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="24" font-weight="700" fill="#e6edf3">${brand}</text>
-  <text x="1152" y="64" text-anchor="end" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="22" fill="#8b9bb0">Prepared for ${company}</text>
+  <rect x="48" y="48" width="18" height="18" rx="4" fill="#f2c230"/>
+  <text x="78" y="64" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${brand}</text>
+  <text x="1152" y="64" text-anchor="end" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="22" fill="rgba(255,255,255,0.7)">Prepared for ${company}</text>
   <g transform="translate(600 300)">
     <circle r="78" fill="#ffffff" fill-opacity="0.96"/>
-    <path d="M -22 -40 L 44 0 L -22 40 Z" fill="#0b0f14"/>
+    <path d="M -22 -40 L 44 0 L -22 40 Z" fill="#25211c"/>
   </g>
   ${lines
     .map((line, i) => `<text x="600" y="${startY + 130 + i * lineHeight}" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="44" font-weight="600" fill="#ffffff">${escapeXml(line)}</text>`)
     .join("\n  ")}
-  <text x="600" y="632" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="22" fill="#8b9bb0">20-second personal note · click to watch</text>
+  <text x="600" y="632" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="22" fill="rgba(255,255,255,0.7)">20-second personal note · click to watch</text>
 </svg>`;
 
   return new NextResponse(svg, {
