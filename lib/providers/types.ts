@@ -26,6 +26,8 @@ export interface DiscoveryProvider {
   refresh(facts: CompanyFacts): Promise<CompanyFacts>;
   /** Hand a company to the source for structured enrichment (e.g. push a row into a Clay table). */
   submit(facts: CompanyFacts): Promise<{ accepted: boolean; note: string }>;
+  /** Optional: forget pagination state (called when the store is reset so demo batches are reproducible). */
+  reset?(): void;
 }
 
 /** A collector for one signal type. Used by the signal-source router. */

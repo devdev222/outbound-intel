@@ -22,7 +22,10 @@ export async function seed(opts: { count?: number; reset?: boolean; runPipeline?
   const providers = getProviders();
   const count = opts.count ?? 120;
 
-  if (opts.reset !== false) await store.reset();
+  if (opts.reset !== false) {
+    await store.reset();
+    providers.discovery.reset?.();
+  }
 
   const historical = await providers.crm.exportHistorical();
   await store.replaceHistorical(historical);

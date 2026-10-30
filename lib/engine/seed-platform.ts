@@ -27,12 +27,12 @@ export async function seedPlatformDemo(store: Store, seed = 11): Promise<{ conve
   // Assign owners to scored accounts without one.
   for (const [i, a] of accounts.entries()) if (!a.ownerRepId) await store.upsertAccount({ ...a, ownerRepId: reps[i % reps.length].id });
 
-  const outcomesByType: ConversationOutcome[] = ["no_answer", "no_answer", "voicemail", "voicemail", "connected", "connected", "replied", "not_now", "not_interested", "meeting_booked"];
+  const outcomesByType: ConversationOutcome[] = ["no_answer", "no_answer", "voicemail", "voicemail", "connected", "connected", "connected", "replied", "not_now", "not_interested", "meeting_booked", "meeting_booked", "meeting_booked"];
   let convCount = 0;
   let outcomeCount = 0;
   const pool = accounts.slice(0, Math.min(accounts.length, 45));
   for (const a of pool) {
-    const n = 1 + Math.floor(rng() * 3);
+    const n = 2 + Math.floor(rng() * 3);
     let booked = false;
     for (let k = 0; k < n; k++) {
       const daysAgo = Math.floor(rng() * 28) + 1;
@@ -63,7 +63,7 @@ export async function seedPlatformDemo(store: Store, seed = 11): Promise<{ conve
         const o: Outcome = { id: uuid(), accountId: a.id, outcomeType: "meeting_booked", value: null, notes: "seeded history", source: "seed", createdAt: at };
         await store.insertOutcome(o);
         outcomeCount++;
-        if (rng() < 0.45) {
+        if (rng() < 0.6) {
           const later = new Date(new Date(at).getTime() + (3 + Math.floor(rng() * 10)) * 86_400_000).toISOString();
           const value = Math.round((a.pipelineValue ?? settings.economics.avgOpportunityValue) * (0.7 + rng() * 0.6));
           await store.insertOutcome({ id: uuid(), accountId: a.id, outcomeType: "opportunity_created", value, notes: "seeded history", source: "seed", createdAt: later < nowIso() ? later : nowIso() });

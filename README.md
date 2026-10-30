@@ -1,9 +1,29 @@
-# Outbound Intelligence Engine
+# Cartage Revenue Operating System
 
-A working implementation of the "AI Outbound Intelligence Engine" MVP: a team of
-ten agents that learns from historical conversions, discovers and scores
-accounts, launches personalized campaigns, tracks engagement, activates reps
-through Jerry, and retrains itself from every outcome.
+An AI-native outbound platform: a team of eleven agents learns from historical
+conversions, discovers and scores accounts, verifies they are rep-ready,
+launches personalized campaigns, tracks engagement, activates reps through
+Jerry, captures what happens in every conversation, and retrains itself from
+every outcome. The system does the preparation; the BDR does the selling.
+
+## Workspaces and roles
+
+Sign in at `/login`. The demo identity provider ships three users (password
+`demo`, or `DEMO_PASSWORD`); swap `lib/auth/users.ts` for SSO and the roles and
+route gating stay.
+
+| Role | Home | What they see |
+|---|---|---|
+| Executive (`exec@cartage.demo`) | `/exec` | Command center: qualified pipeline, meetings booked/held, opportunities, pipeline per BDR, cost per opportunity, top signals, experiment results, capacity, AI recommendations, and "ask about performance" in plain language. Also `/pipeline`, `/intelligence`, `/lab`, `/capacity`, `/gifting`. |
+| BDR (`bdr@cartage.demo`) | `/work` | Today's prepared queue: high-intent engagement, calls ready, follow-ups, meetings, exceptions. Each card has the verified contact, why now, the opener, the pain hypothesis, matched proof and the next action; "Start conversation" logs the outcome and the engine writes the summary, objections, follow-up draft and CRM update. |
+| Admin (`admin@cartage.demo`) | `/console` | Revenue engineering: grouped agents, integrations, data sources, scoring model and economics settings, automation permissions, suppressions, reps, logs and errors, audit log. |
+
+Accounts enter the BDR queue only after the readiness engine passes every
+check (ICP fit, decision-maker, usable contact, fresh evidence with sources,
+outreach hypothesis, CRM ownership, suppression); otherwise they go back to
+enrichment with explicit blockers. Prospects see the shortened personalized
+page at `/for/{slug}-{token}` and the Freight Operations Efficiency Assessment at
+`/assess/{slug}-{token}`; both label every figure as an estimate.
 
 It runs end to end on this machine with no accounts and no keys. Every external
 system (Clay, Jerry, Tavus, Sequencer, Dialer, PostHog, Slack, RB2B, Calendly,

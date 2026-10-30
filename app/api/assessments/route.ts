@@ -43,12 +43,14 @@ export async function POST(req: Request) {
   return json({ ok: true, assessment });
 }
 
-/** GET ?slug=x -> latest assessments + default inputs for that account (public read is limited to defaults). */
+/** GET ?slug=x -> default inputs + preview (public). Saved assessments are returned only to a signed-in user. */
 export async function GET(req: Request) {
   const slug = new URL(req.url).searchParams.get("slug");
   const store = getStore();
   const account = slug ? await store.getAccountBySlug(slug) : null;
   const defaults = defaultInputsFor(account);
-  const list = account ? (await assessments.list()).filter((a) => a.accountId === account.id).sort((a, b) => b.at.localeCompare(a.at)) : [];
+  const { getSession } = await import("@/lib/auth");
+  const user = await getSession();
+  const list = user && account ? (await assessments.list()).filter((a) => a.accountId === account.id).sort((a, b) => b.at.localeCompare(a.at)) : [];
   return json({ defaults, assessments: list.slice(0, 5), preview: computeAssessment(defaults) });
 }

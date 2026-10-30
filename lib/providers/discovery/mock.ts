@@ -26,6 +26,10 @@ export class MockDiscoveryProvider implements DiscoveryProvider {
   async submit(): Promise<{ accepted: boolean; note: string }> {
     return { accepted: true, note: "mock discovery: nothing to submit" };
   }
+
+  reset(): void {
+    this.cursor = 0;
+  }
 }
 
 /** Collector that reads signals straight out of the synthetic facts. */

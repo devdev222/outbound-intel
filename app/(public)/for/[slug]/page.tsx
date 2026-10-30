@@ -1,15 +1,16 @@
 import type { Metadata } from "next";
 import BookingCTA from "@/components/landing/BookingCTA";
 import { CalcStateProvider } from "@/components/landing/CalcState";
-import CaseStudySection from "@/components/landing/CaseStudySection";
+import ProofStorySection from "@/components/landing/ProofStorySection";
 import ROICalculator from "@/components/landing/ROICalculator";
 import { Closing, GenericPage, Hero, Nav, WorkflowCards } from "@/components/landing/Sections";
 import Tracker from "@/components/landing/Tracker";
-import VideoPlayer, { WilsonGlyph } from "@/components/landing/VideoPlayer";
+import VideoPlayer from "@/components/landing/VideoPlayer";
 import { config } from "@/lib/config";
-import { selectTestimonials } from "@/lib/content/case-studies";
 import { bookingHrefFor, pageRecordFor, type PageRecord } from "@/lib/engine/page-record";
+import { rankProof } from "@/lib/engine/proof";
 import { getStore } from "@/lib/store";
+import { proofStories } from "@/lib/store/collections";
 import type { Account } from "@/lib/types";
 import { pageTokenFor, parsePageParam } from "@/lib/util";
 
@@ -26,7 +27,6 @@ async function resolveAccount(param: string): Promise<Account | null> {
   const store = getStore();
   const { slug, token } = parsePageParam(param);
   let account = await store.getAccountBySlug(slug);
-  // A slug that happens to end in 8 alphanumerics would be split; fall back to the raw param.
   if (!account && token) account = await store.getAccountBySlug(param);
   if (!account) return null;
   if (token && account.slug === slug && token !== pageTokenFor(account.id)) return null;
@@ -49,6 +49,10 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   };
 }
 
+/**
+ * The personalized page, kept to five things: the value proposition, three
+ * operational opportunities, the savings calculator, one proof story, one ask.
+ */
 export default async function PersonalizedPage({ params }: Params) {
   const { slug } = await params;
   const account = await resolveAccount(slug);
@@ -56,22 +60,14 @@ export default async function PersonalizedPage({ params }: Params) {
 
   const record: PageRecord = await pageRecordFor(account);
   const isPreview = record.status !== "published";
-  const testimonials = selectTestimonials({ industry: record.industry, testimonial_ids: record.testimonial_ids, workflow_tags: record.workflow_tags }, { allowUnapproved: config.demoBanner });
+  const proof = rankProof(account, await proofStories.list(), { allowPlaceholders: config.demoBanner })[0] ?? null;
 
-  // Booking: a real scheduler link opens in a new tab (tracked by data-booking); otherwise CTAs lead to the request form in the closing panel.
   const schedulerHref = config.calendly.url ? withPrefill(bookingHrefFor(config.calendly.url, record.campaign_id, record.account_id), account) : null;
   const talkHref = schedulerHref ?? "#talk";
   const bookingCta = { href: talkHref, label: record.rep_name ? `Talk to ${record.rep_name}` : "Book a call", booking: Boolean(schedulerHref) };
-
-  const links = [
-    record.workflow_cards.length > 0 && { href: "#workflow", label: "Your workflow" },
-    testimonials.length > 0 && { href: "#proof", label: "Customer proof" },
-    { href: "#estimate", label: "Your estimate" },
-  ].filter(Boolean) as { href: string; label: string }[];
-
+  const token = pageTokenFor(account.id);
   const firstName = account.contact?.name.split(" ")[0] ?? "there";
   const campaign = account.campaign;
-  const repLabel = record.rep_name || "your Cartage team";
 
   return (
     <>
@@ -83,28 +79,15 @@ export default async function PersonalizedPage({ params }: Params) {
         </a>
       )}
 
-      <Nav links={links} cta={bookingCta} />
+      <Nav links={[{ href: "#estimate", label: "Your estimate" }]} cta={bookingCta} />
       <main>
-        <Hero
-          eyebrow={`Prepared for ${record.company_name}`}
-          headline={record.headline}
-          lede={record.value_proposition}
-          primary={{ href: "#estimate", label: "See your potential savings" }}
-          secondary={{ href: talkHref, label: "Talk through your workflow", booking: Boolean(schedulerHref) }}
-        />
+        {/* 1. Personalized value proposition */}
+        <Hero eyebrow={`Prepared for ${record.company_name}`} headline={record.headline} lede={record.value_proposition} primary={bookingCta} secondary={{ href: "#estimate", label: "See your potential savings" }} />
 
-        {/* Opening: rep note + video */}
-        <section className="cp-opening cp-section" id="video" aria-label={`A note from ${repLabel}`} data-section="opening">
-          <div className="cp-container cp-opening__grid cp-opening__grid--both">
-            <figure className="cp-note cp-reveal">
-              <span className="cp-note__magnet" aria-hidden="true">
-                <WilsonGlyph size={30} />
-              </span>
-              <p className="cp-note__label">A note from {repLabel}</p>
-              <blockquote className="cp-note__body">{record.rep_message}</blockquote>
-              {record.rep_name && <figcaption className="cp-note__sign">{record.rep_name}, Cartage</figcaption>}
-            </figure>
-            <div className="cp-reveal">
+        {/* Compact rep note: the video carries the script as captions, so it is not repeated as text. */}
+        <section className="cp-opening cp-section" id="video" aria-label="A short note from your Cartage team" data-section="opening">
+          <div className="cp-container cp-opening__grid cp-opening__grid--note">
+            <div className="cp-reveal cp-opening__video">
               <VideoPlayer
                 slug={account.slug}
                 script={record.rep_message}
@@ -119,11 +102,11 @@ export default async function PersonalizedPage({ params }: Params) {
           </div>
         </section>
 
-        <WorkflowCards company={record.company_name} cards={record.workflow_cards} />
-
-        <CaseStudySection slug={account.slug} testimonials={testimonials} />
+        {/* 2. Three operational opportunities */}
+        <WorkflowCards company={record.company_name} cards={record.workflow_cards.slice(0, 3)} />
 
         <CalcStateProvider defaults={record.calculator_defaults}>
+          {/* 3. Interactive savings calculator */}
           <section className="cp-calc cp-section" id="estimate" aria-labelledby="calc-title" data-section="estimate">
             <div className="cp-container">
               <p className="cp-label cp-reveal">Your estimate</p>
@@ -132,11 +115,18 @@ export default async function PersonalizedPage({ params }: Params) {
               </h2>
               <ROICalculator slug={account.slug} workflowTags={record.workflow_tags} />
               <p className="cp-calc__disclaimer">
-                Directional estimate based on your inputs. Recovered capacity is not guaranteed cash savings. Subscription and implementation costs are excluded.
+                Directional estimate based on your inputs. Recovered capacity is not guaranteed cash savings. Subscription and implementation costs are excluded.{" "}
+                <a className="cp-quiet-link" href={`/assess/${account.slug}-${token}`}>
+                  Take the 3-minute freight operations assessment
+                </a>
               </p>
             </div>
           </section>
 
+          {/* 4. One proof story */}
+          <ProofStorySection match={proof} />
+
+          {/* 5. One ask */}
           <Closing id="talk" preparedFor={record.company_name}>
             <BookingCTA slug={account.slug} repName={record.rep_name} bookingHref={schedulerHref} contactName={account.contact?.name} contactEmail={account.contact?.email} />
           </Closing>
