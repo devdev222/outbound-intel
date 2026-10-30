@@ -17,7 +17,7 @@ export interface SeedResult {
  * train the first real model, discover a batch of companies, and (optionally)
  * run the whole team once so the dashboard has something to show.
  */
-export async function seed(opts: { count?: number; reset?: boolean; runPipeline?: boolean; useLlm?: boolean } = {}): Promise<SeedResult> {
+export async function seed(opts: { count?: number; reset?: boolean; runPipeline?: boolean; useLlm?: boolean; platformDemo?: boolean } = {}): Promise<SeedResult> {
   const store = getStore();
   const providers = getProviders();
   const count = opts.count ?? 120;
@@ -37,9 +37,15 @@ export async function seed(opts: { count?: number; reset?: boolean; runPipeline?
   });
   await store.upsertAccounts(accounts);
 
+  const { ensureDemoIdentities } = await import("@/lib/auth/users");
+  await ensureDemoIdentities();
   const runs =
     opts.runPipeline === false
       ? []
       : (await runPipelineOnce({ drain: true })).filter((r) => r.processed > 0 || r.status === "error").map((r) => ({ agentId: r.agentId, status: r.status, summary: r.summary }));
+  if (opts.runPipeline !== false && opts.platformDemo !== false) {
+    const { seedPlatformDemo } = await import("./seed-platform");
+    await seedPlatformDemo(store);
+  }
   return { historical: historical.length, model, accounts: accounts.length, runs };
 }

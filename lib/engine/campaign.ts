@@ -6,6 +6,7 @@ import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
 import type { Account, Campaign, ExperimentArms, OutreachTouch, RoiDefaults, ScoringModel, Signal } from "@/lib/types";
 import { hash32, nowIso, pageTokenFor, uuid } from "@/lib/util";
+import { applyExperiments } from "./experiments";
 import { SIGNAL_BY_KEY, signalLabel } from "./signal-catalog";
 
 /** Canonical personalized page URL: /for/{slug}-{token}. The token is derived from the account id. */
@@ -264,7 +265,10 @@ export async function launchCampaign(
   account: Account,
   ctx: { store: Store; providers: Providers; model: ScoringModel; log?: (s: string) => void },
 ): Promise<Account> {
-  const arms = assignArms(account.id);
+  // Default arms, then overrides from any running Lab experiment the account is eligible for.
+  const { assignments, overrides } = await applyExperiments(account);
+  const arms: ExperimentArms = { ...assignArms(account.id), ...(overrides as Partial<ExperimentArms>) };
+  account = { ...account, experiments: assignments };
   const copy = await generateCopy(account, ctx.model, arms);
   const pageUrl = pageUrlFor(account);
   const roi = roiDefaultsFor(account);

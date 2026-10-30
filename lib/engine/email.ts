@@ -27,10 +27,11 @@ export function renderTouchEmail(account: Account, touch: OutreachTouch): { html
   const thumbBlock = showThumb
     ? `<p style="margin:6px 0 16px 0"><a href="${pageUrl}#video" style="text-decoration:none"><img src="${thumb}" alt="20-second note for ${escapeHtml(account.companyName)}" width="480" style="display:block;max-width:100%;border-radius:10px;border:1px solid #e5e7eb"></a></p>`
     : "";
+  const optOut = `${config.appUrl}/api/optout?slug=${encodeURIComponent(account.slug)}${account.contact?.email ? `&e=${encodeURIComponent(account.contact.email)}` : ""}`;
   const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#ffffff"><div style="max-width:560px;margin:0 auto">${paragraphs.replace(
     "</p>",
     `</p>${thumbBlock}`,
-  )}<p style="margin:24px 0 0 0;font:12px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#6b7280">${escapeHtml(config.brandName)} · ${escapeHtml(pageUrl)}</p></div></body></html>`;
-  const text = `${body}\n\n${config.brandName} · ${pageUrl}`;
+  )}<p style="margin:24px 0 0 0;font:12px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#6b7280">${escapeHtml(config.brandName)} · ${escapeHtml(pageUrl)} · <a href="${optOut}" style="color:#6b7280">unsubscribe</a></p></div></body></html>`;
+  const text = `${body}\n\n${config.brandName} · ${pageUrl}\nUnsubscribe: ${optOut}`;
   return { html, text };
 }

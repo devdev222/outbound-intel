@@ -71,6 +71,13 @@ export interface Store {
   getAgentStates(): Promise<AgentState[]>;
   saveAgentState(state: AgentState): Promise<void>;
 
+  // Generic document collections (reps, users, conversations, experiments, proof, gifts,
+  // assessments, settings, suppressions, audit). Typed wrappers live in lib/store/collections.ts.
+  getDoc<T>(collection: string, id: string): Promise<T | null>;
+  listDocs<T>(collection: string): Promise<T[]>;
+  putDoc<T extends { id: string }>(collection: string, doc: T): Promise<T>;
+  deleteDoc(collection: string, id: string): Promise<void>;
+
   // Danger: wipe everything (used by `npm run reset` and the dashboard reset button)
   reset(): Promise<void>;
 }

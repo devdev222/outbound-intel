@@ -206,6 +206,7 @@ export interface Campaign {
 export type AccountStatus =
   | "discovered"
   | "scored"
+  | "needs_enrichment"
   | "qualified"
   | "campaign_live"
   | "engaged"
@@ -247,6 +248,17 @@ export interface Account {
   lastAlertAt: string | null;
   /** When engagement crosses a threshold the monitor sets this; Jerry clears it when the rep is activated. */
   pendingActivation: string | null;
+  /** Rep who owns the account in the queue (assigned when it becomes ready). */
+  ownerRepId?: string | null;
+  /** Latest readiness evaluation; accounts enter the BDR queue only when ready. */
+  readiness?: ReadinessReport | null;
+  nextAction?: NextAction | null;
+  /** Experiment assignments: experimentId -> armKey */
+  experiments?: Record<string, string>;
+  /** Estimated pipeline value when qualified (from economics settings and size). */
+  pipelineValue?: number | null;
+  /** CRM ownership check result. */
+  crmOwner?: string | null;
   /** agentId -> ISO timestamp of the last time that agent processed this account. */
   agentRuns: Record<string, string>;
   createdAt: string;
@@ -535,4 +547,301 @@ export interface PipelineSummary {
   alerts: number;
   events: number;
   modelVersion: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Users, roles, reps (Revenue Operating System)
+// ---------------------------------------------------------------------------
+
+export type Role = "exec" | "bdr" | "admin";
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  /** For BDRs: the rep record they execute as. */
+  repId?: string;
+}
+
+export interface Rep {
+  id: string;
+  name: string;
+  email: string;
+  /** Conversations the rep can realistically start per working day. */
+  capacityPerDay: number;
+  active: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Prospect readiness
+// ---------------------------------------------------------------------------
+
+export interface ReadinessCheck {
+  key: "icp_fit" | "decision_maker" | "contact" | "evidence" | "hypothesis" | "crm" | "suppression" | "next_action";
+  label: string;
+  pass: boolean;
+  detail: string;
+}
+
+export interface ReadinessReport {
+  ready: boolean;
+  checks: ReadinessCheck[];
+  blockers: string[];
+  evaluatedAt: string;
+}
+
+export type NextActionType = "call" | "email" | "linkedin" | "wait" | "enrich" | "review" | "meeting_prep" | "close";
+
+export interface NextAction {
+  type: NextActionType;
+  label: string;
+  reason: string;
+  dueAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Conversation intelligence
+// ---------------------------------------------------------------------------
+
+export type ConversationChannel = "call" | "email" | "linkedin" | "meeting";
+export type ConversationOutcome = "connected" | "voicemail" | "no_answer" | "replied" | "meeting_booked" | "not_interested" | "not_now" | "wrong_contact";
+
+export interface Conversation {
+  id: string;
+  accountId: string;
+  repId: string | null;
+  channel: ConversationChannel;
+  outcome: ConversationOutcome;
+  /** Raw notes or transcript the rep logged. */
+  notes: string;
+  summary: string;
+  objections: string[];
+  signalsExtracted: string[];
+  followUpDraft: { subject: string; body: string } | null;
+  followUpTouchId: string | null;
+  nextAction: NextAction | null;
+  /** true once a human approved the follow-up / CRM update. */
+  approved: boolean;
+  generatedBy: "llm" | "template";
+  at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Experiments
+// ---------------------------------------------------------------------------
+
+export type ExperimentType = "email" | "video" | "landing_page" | "assessment" | "gifting" | "testimonial";
+export type ExperimentMetric = "qualified_pipeline" | "meetings_held" | "opportunities" | "meetings_booked";
+
+export interface ExperimentArm {
+  key: string;
+  name: string;
+  /** Share of eligible accounts, 0..1; shares sum to 1. */
+  share: number;
+  /** Arm-specific configuration (e.g. { angleVariant: "B" }, { gift: true }, { testimonialId }). */
+  config: Record<string, unknown>;
+  control: boolean;
+}
+
+export interface ExperimentSegment {
+  industries: string[];
+  sizeBands: string[];
+  signalKeys: string[];
+  minScore: number;
+}
+
+export interface Experiment {
+  id: string;
+  name: string;
+  hypothesis: string;
+  type: ExperimentType;
+  segment: ExperimentSegment;
+  arms: ExperimentArm[];
+  primaryMetric: ExperimentMetric;
+  status: "draft" | "running" | "completed";
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  createdBy: string;
+}
+
+export interface ArmResult {
+  armKey: string;
+  name: string;
+  control: boolean;
+  accounts: number;
+  meetingsBooked: number;
+  meetingsHeld: number;
+  opportunities: number;
+  qualifiedPipeline: number;
+  cost: number;
+  conversionRate: number;
+  costPerOpportunity: number | null;
+}
+
+export interface ExperimentResults {
+  experimentId: string;
+  arms: ArmResult[];
+  comparisons: { armKey: string; lift: number; zScore: number; pValue: number; significant: boolean; sampleWarning: string | null }[];
+  computedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Customer proof
+// ---------------------------------------------------------------------------
+
+export interface ProofOutcome {
+  metric: string;
+  value: string;
+  verified: boolean;
+  source: string;
+}
+
+export interface ProofStory {
+  id: string;
+  customer: string;
+  industry: string;
+  sizeBand: string;
+  challenges: string[];
+  capabilities: string[];
+  outcomes: ProofOutcome[];
+  quote?: string;
+  quoteBy?: string;
+  /** Marketing / legal sign-off. Unapproved stories never reach prospects. */
+  approved: boolean;
+  /** Synthetic placeholder: shown only in demo mode and always labelled. */
+  placeholder: boolean;
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Gifting
+// ---------------------------------------------------------------------------
+
+export interface GiftCampaign {
+  id: string;
+  name: string;
+  budgetTotal: number;
+  perGiftLimit: number;
+  eligibility: { minScore: number; statuses: AccountStatus[]; requireEngagement: boolean };
+  approvalRequired: boolean;
+  status: "draft" | "active" | "paused" | "closed";
+  experimentId: string | null;
+  createdAt: string;
+}
+
+export type GiftStatus = "proposed" | "approved" | "rejected" | "ordered" | "delivered" | "canceled";
+
+export interface Gift {
+  id: string;
+  campaignId: string;
+  accountId: string;
+  description: string;
+  amount: number;
+  status: GiftStatus;
+  proposedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  deliveredAt: string | null;
+  note: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Freight operations assessment
+// ---------------------------------------------------------------------------
+
+export interface AssessmentInputs {
+  shipmentsPerMonth: number;
+  quotesPerWeek: number;
+  minutesPerQuote: number;
+  carriersContactedPerLoad: number;
+  minutesPerCarrierContact: number;
+  trackingChecksPerDay: number;
+  minutesPerTrackingCheck: number;
+  exceptionsPerWeek: number;
+  minutesPerException: number;
+  expectedGrowthPercent: number;
+  hourlyCost: number;
+}
+
+export interface AssessmentArea {
+  key: "quoting" | "carrier_communication" | "tracking" | "exceptions" | "scalability";
+  label: string;
+  hoursPerWeek: number;
+  automationLow: number;
+  automationHigh: number;
+  note: string;
+}
+
+export interface AssessmentResults {
+  areas: AssessmentArea[];
+  totalHoursPerWeek: number;
+  recoverableHoursLow: number;
+  recoverableHoursHigh: number;
+  annualValueLow: number;
+  annualValueHigh: number;
+  assumptions: string[];
+}
+
+export interface Assessment {
+  id: string;
+  accountId: string;
+  inputs: AssessmentInputs;
+  results: AssessmentResults;
+  source: "prospect" | "rep";
+  at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Governance
+// ---------------------------------------------------------------------------
+
+export interface AutomationSettings {
+  autoSendEmail: boolean;
+  autoLaunchCampaigns: boolean;
+  autoProposeGifts: boolean;
+  requireFollowUpApproval: boolean;
+  /** Signals older than this are flagged stale and discounted. */
+  signalFreshnessDays: number;
+  qualificationThreshold: number;
+  hotThreshold: number;
+}
+
+export interface Suppression {
+  id: string;
+  /** email address or @domain */
+  target: string;
+  reason: "opt_out" | "customer" | "competitor" | "do_not_contact" | "bounced" | "manual";
+  note: string | null;
+  createdBy: string;
+  at: string;
+}
+
+export interface AuditEntry {
+  id: string;
+  userId: string;
+  userName: string;
+  role: Role;
+  action: string;
+  target: string;
+  detail: string;
+  at: string;
+}
+
+export interface EconomicsSettings {
+  repFullyLoadedMonthly: number;
+  toolingMonthly: number;
+  videoCostPerRender: number;
+  avgOpportunityValue: number;
+  /** Fraction of booked meetings that are held. */
+  meetingHoldRate: number;
+}
+
+export interface PlatformSettings {
+  id: "global";
+  automation: AutomationSettings;
+  economics: EconomicsSettings;
+  updatedAt: string;
+  updatedBy: string;
 }

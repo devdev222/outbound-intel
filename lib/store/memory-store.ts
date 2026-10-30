@@ -18,6 +18,10 @@ export class MemoryStore extends FileStore {
     return (this.data.get(c) as T[] | undefined) ?? [];
   }
 
+  override async reset(): Promise<void> {
+    this.data.clear();
+  }
+
   protected override async write<T>(c: Collection, rows: T[]): Promise<void> {
     this.data.set(c, rows);
   }

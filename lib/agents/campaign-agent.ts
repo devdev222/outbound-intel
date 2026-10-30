@@ -1,7 +1,9 @@
 import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
 import { launchCampaign } from "@/lib/engine/campaign";
+import { proposeGifts } from "@/lib/engine/gifting";
 import { processDueTouches } from "@/lib/engine/outreach";
+import { getSettings, giftCampaigns } from "@/lib/store/collections";
 import { type AgentDefinition, mapLimit } from "./base";
 
 /**
@@ -21,7 +23,8 @@ export const campaignAgent: AgentDefinition = {
   step: 4,
   async run(ctx) {
     const all = await ctx.store.listAccounts();
-    const toLaunch = all.filter((a) => a.status === "qualified" && !a.campaign).slice(0, ctx.batchSize);
+    const settings = await getSettings();
+    const toLaunch = settings.automation.autoLaunchCampaigns ? all.filter((a) => a.status === "qualified" && !a.campaign).slice(0, ctx.batchSize) : [];
     await mapLimit(toLaunch, config.agents.llmConcurrency, async (a) => {
       const launched = await launchCampaign(a, ctx);
       const touches = await ctx.store.listOutreach({ accountId: a.id });
@@ -37,7 +40,16 @@ export const campaignAgent: AgentDefinition = {
 
     const due = await processDueTouches(ctx.store, ctx.providers, { log: ctx.log, activity: ctx.activity });
 
-    const parts = [`${toLaunch.length} campaigns launched`];
+    // Gifting: propose gifts for active campaigns when automation allows (approvals still apply).
+    let proposed = 0;
+    if (settings.automation.autoProposeGifts) {
+      for (const gc of (await giftCampaigns.list()).filter((g) => g.status === "active")) {
+        proposed += (await proposeGifts(ctx.store, gc, { limit: 5 })).length;
+      }
+    }
+
+    const parts = [settings.automation.autoLaunchCampaigns ? `${toLaunch.length} campaigns launched` : "campaign launch paused by automation settings"];
+    if (proposed) parts.push(`${proposed} gifts proposed`);
     if (due.sent) parts.push(`${due.sent} touches sent via ${ctx.providers.outreach.name}`);
     if (due.repTasks) parts.push(`${due.repTasks} rep tasks created`);
     if (due.failed) parts.push(`${due.failed} failed`);

@@ -217,12 +217,34 @@ export const jerryAgent: AgentDefinition = {
   cadenceSeconds: 15,
   step: 7,
   async run(ctx) {
-    const flagged = (await ctx.store.listAccounts()).filter((a) => a.pendingActivation).slice(0, ctx.batchSize);
+    const all = await ctx.store.listAccounts();
+    const flagged = all.filter((a) => a.pendingActivation).slice(0, ctx.batchSize);
     let delivered = 0;
     for (const a of flagged) {
       const { alert } = await activateAccount(a, ctx);
       if (alert.deliveredVia.length) delivered++;
     }
-    return { processed: flagged.length, summary: flagged.length ? `${flagged.length} reps activated (${delivered} alerts delivered)` : "no accounts awaiting activation" };
+    // Readiness blockers about contact data: enrich once so the Scoring Agent can re-evaluate.
+    const blocked = all.filter((a) => a.status === "needs_enrichment" && a.readiness && a.readiness.checks.some((c) => (c.key === "contact" || c.key === "decision_maker") && !c.pass) && !a.agentRuns.jerry).slice(0, ctx.batchSize);
+    let enriched = 0;
+    for (const a of blocked) {
+      const person = a.contact ?? pickContact(a.facts.people, ctx.model);
+      if (!person) {
+        await ctx.store.upsertAccount(markAgentRun(a, "jerry"));
+        ctx.activity(a.id, "enrichment_skipped", "No person on file to enrich; needs discovery data");
+        continue;
+      }
+      try {
+        const r = await ctx.providers.enrichment.enrichContact(person, a);
+        await ctx.store.upsertAccount(markAgentRun({ ...a, contact: r.contact }, "jerry"));
+        ctx.activity(a.id, "contact_enriched", `Contact enriched via ${r.provider}: ${[r.phoneVerified ? "verified phone" : null, r.contact.email ? "email" : null, r.linkedinMatched ? "LinkedIn" : null].filter(Boolean).join(", ") || "nothing new"}`, r.notes.filter((n) => !n.startsWith("mock")));
+        enriched++;
+      } catch (err) {
+        ctx.log(`jerry: enrichment failed for ${a.slug}: ${(err as Error).message}`);
+        await ctx.store.upsertAccount(markAgentRun(a, "jerry"));
+      }
+    }
+    const parts = [flagged.length ? `${flagged.length} reps activated (${delivered} alerts delivered)` : "no activations", enriched ? `${enriched} blocked accounts enriched` : null].filter(Boolean);
+    return { processed: flagged.length + enriched, summary: parts.join(", ") };
   },
 };

@@ -3,8 +3,11 @@ import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
 import { angleFor } from "@/lib/engine/campaign";
 import { computeScores, priorityFrom } from "@/lib/engine/scoring";
+import { accountPipelineValue } from "@/lib/engine/capacity";
+import { assignOwner, evaluateReadiness, nextActionFor, readinessContextFor } from "@/lib/engine/readiness";
 import { generateStructured, llmAvailable } from "@/lib/llm";
-import type { Account, ScoreBreakdown, ScoringModel } from "@/lib/types";
+import { getSettings } from "@/lib/store/collections";
+import type { Account, PlatformSettings, ScoreBreakdown, ScoringModel } from "@/lib/types";
 import { type AgentContext, type AgentDefinition, mapLimit, upstreamChangedSince } from "./base";
 
 /**
@@ -48,7 +51,7 @@ function templatePain(account: Account): string {
   return "Shipping coordination is consuming operations capacity that should go to customers";
 }
 
-async function scoreAccount(account: Account, ctx: AgentContext, explainWithLlm: boolean): Promise<Account> {
+async function scoreAccount(account: Account, ctx: AgentContext, explainWithLlm: boolean, settings: PlatformSettings): Promise<Account> {
   const scores = computeScores(
     {
       signals: account.signals,
@@ -98,9 +101,23 @@ async function scoreAccount(account: Account, ctx: AgentContext, explainWithLlm:
     }
   }
 
-  const qualifies = scores.total >= config.engine.qualificationThreshold;
+  const threshold = settings.automation.qualificationThreshold;
+  const qualifies = scores.total >= threshold;
   let status = account.status;
-  if (status === "discovered" || status === "scored" || status === "qualified") status = qualifies ? "qualified" : "scored";
+  // Readiness gate: a qualifying account enters the queue only when every check passes; otherwise it goes to enrichment.
+  const readinessCtx = await readinessContextFor(ctx.store, account, ctx.model, settings.automation);
+  const readiness = evaluateReadiness({ ...account, scores, painHypothesis, messagingAngle }, readinessCtx);
+  if (status === "discovered" || status === "scored" || status === "qualified" || status === "needs_enrichment") {
+    status = qualifies ? (readiness.ready ? "qualified" : "needs_enrichment") : "scored";
+  }
+  const ownerRepId = status === "qualified" || (readiness.ready && !["discovered", "scored"].includes(status)) ? await assignOwner(ctx.store, account) : (account.ownerRepId ?? null);
+  const nextAction = nextActionFor({ ...account, status, pendingActivation: account.pendingActivation }, readiness);
+  const pipelineValue = qualifies ? accountPipelineValue(account, settings) : (account.pipelineValue ?? null);
+  if (!readiness.ready && qualifies && account.status !== "needs_enrichment") {
+    ctx.activity(account.id, "readiness_blocked", `Qualifies (${scores.total}) but not rep-ready: ${readiness.blockers.length} blocker${readiness.blockers.length === 1 ? "" : "s"}`, readiness.blockers);
+  } else if (readiness.ready && account.status === "needs_enrichment") {
+    ctx.activity(account.id, "readiness_passed", "All readiness checks pass; entering the rep queue", readiness.checks.map((c) => `${c.label}: ${c.detail}`));
+  }
 
   const before = account.scores?.total;
   if (before !== scores.total || account.modelVersion !== ctx.model.version || status !== account.status) {
@@ -129,6 +146,10 @@ async function scoreAccount(account: Account, ctx: AgentContext, explainWithLlm:
       recommendedPersona,
       status,
       modelVersion: ctx.model.version,
+      readiness,
+      nextAction,
+      ownerRepId,
+      pipelineValue,
     },
     "scoring",
   );
@@ -143,11 +164,15 @@ export const scoringAgent: AgentDefinition = {
   step: 3,
   async run(ctx) {
     const all = await ctx.store.listAccounts();
+    const settings = await getSettings();
     const due = all.filter(
       (a) =>
         a.status !== "disqualified" &&
         a.agentRuns.research &&
-        (a.scores === null || (a.modelVersion ?? 0) < ctx.model.version || upstreamChangedSince(a, "scoring", ["research", "icp"])),
+        (a.scores === null ||
+          (a.modelVersion ?? 0) < ctx.model.version ||
+          upstreamChangedSince(a, "scoring", ["research", "icp", "jerry"]) ||
+          (a.status === "needs_enrichment" && !a.readiness)),
     );
     const batch = due.slice(0, ctx.batchSize);
     // Deterministic pass first so we know who the top accounts are, then LLM explanations for the top N only.
@@ -160,17 +185,19 @@ export const scoringAgent: AgentDefinition = {
     }));
     const cutoff = [...prelim].sort((x, y) => y.total - x.total)[Math.min(config.llm.explainTopN, prelim.length) - 1]?.total ?? Infinity;
     let qualified = 0;
+    let blocked = 0;
     let explained = 0;
     await mapLimit(prelim, config.agents.llmConcurrency, async ({ a, total }) => {
-      const useLlm = llmAvailable() && total >= cutoff && total >= config.engine.qualificationThreshold - 10;
-      const updated = await scoreAccount(a, ctx, useLlm);
+      const useLlm = llmAvailable() && total >= cutoff && total >= settings.automation.qualificationThreshold - 10;
+      const updated = await scoreAccount(a, ctx, useLlm, settings);
       if (useLlm) explained++;
       if (updated.status === "qualified") qualified++;
+      if (updated.status === "needs_enrichment") blocked++;
       await ctx.store.upsertAccount(updated);
     });
     return {
       processed: batch.length,
-      summary: `${batch.length} accounts scored with model v${ctx.model.version}, ${qualified} qualified (>= ${config.engine.qualificationThreshold}), ${explained} explained by Claude, ${due.length - batch.length} waiting`,
+      summary: `${batch.length} accounts scored with model v${ctx.model.version}, ${qualified} rep-ready (>= ${settings.automation.qualificationThreshold}), ${blocked} back to enrichment, ${explained} explained by Claude, ${due.length - batch.length} waiting`,
     };
   },
 };

@@ -27,7 +27,8 @@ export type Collection =
   | "outreach"
   | "activity"
   | "agent_runs"
-  | "agent_state";
+  | "agent_state"
+  | `docs_${string}`;
 
 /**
  * JSON-on-disk store. One file per collection under DATA_DIR. Writes are
@@ -307,9 +308,38 @@ export class FileStore implements Store {
     });
   }
 
+  // Generic documents ---------------------------------------------------------
+
+  async getDoc<T>(collection: string, id: string): Promise<T | null> {
+    return (await this.read<T & { id: string }>(`docs_${collection}`)).find((d) => d.id === id) ?? null;
+  }
+
+  listDocs<T>(collection: string): Promise<T[]> {
+    return this.read<T>(`docs_${collection}`);
+  }
+
+  putDoc<T extends { id: string }>(collection: string, doc: T): Promise<T> {
+    return this.mutate<T, T>(`docs_${collection}`, (rows) => {
+      const idx = rows.findIndex((r) => r.id === doc.id);
+      if (idx >= 0) rows[idx] = doc;
+      else rows.push(doc);
+      return { rows, result: doc };
+    });
+  }
+
+  deleteDoc(collection: string, id: string): Promise<void> {
+    return this.mutate<{ id: string }, void>(`docs_${collection}`, (rows) => ({ rows: rows.filter((r) => r.id !== id), result: undefined }));
+  }
+
   // Reset --------------------------------------------------------------------
 
   async reset(): Promise<void> {
+    try {
+      const files = await fs.readdir(this.dir);
+      for (const f of files) if (f.startsWith("docs_") && f.endsWith(".json")) await this.mutate<unknown, void>(f.replace(/.json$/, "") as Collection, () => ({ rows: [], result: undefined }));
+    } catch {
+      /* no data dir yet */
+    }
     const all: Collection[] = [
       "accounts",
       "historical",

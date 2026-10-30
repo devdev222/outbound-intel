@@ -609,9 +609,36 @@ export class SupabaseStore implements Store {
     if (error) this.fail("saveAgentState", error);
   }
 
+  // Generic documents (table "documents": collection text, id text, data jsonb) --------------
+
+  async getDoc<T>(collection: string, id: string): Promise<T | null> {
+    const { data, error } = await this.db.from("documents").select("data").eq("collection", collection).eq("id", id).maybeSingle();
+    if (error) this.fail("getDoc", error);
+    return data ? (data.data as T) : null;
+  }
+
+  async listDocs<T>(collection: string): Promise<T[]> {
+    const { data, error } = await this.db.from("documents").select("data").eq("collection", collection).order("updated_at", { ascending: false });
+    if (error) this.fail("listDocs", error);
+    return (data ?? []).map((r) => r.data as T);
+  }
+
+  async putDoc<T extends { id: string }>(collection: string, doc: T): Promise<T> {
+    const { error } = await this.db.from("documents").upsert({ collection, id: doc.id, data: doc, updated_at: new Date().toISOString() }, { onConflict: "collection,id" });
+    if (error) this.fail("putDoc", error);
+    return doc;
+  }
+
+  async deleteDoc(collection: string, id: string): Promise<void> {
+    const { error } = await this.db.from("documents").delete().eq("collection", collection).eq("id", id);
+    if (error) this.fail("deleteDoc", error);
+  }
+
   // Reset --------------------------------------------------------------------
 
   async reset(): Promise<void> {
+    const { error: docs } = await this.db.from("documents").delete().neq("collection", "");
+    if (docs) this.fail("reset:documents", docs);
     // Order matters because of foreign keys.
     for (const table of ["account_activity", "outreach_touches", "call_queue", "alerts", "outcomes", "events", "agent_runs"]) {
       const { error } = await this.db.from(table).delete().not("id", "is", null);

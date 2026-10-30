@@ -1,6 +1,7 @@
 import { config } from "@/lib/config";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
+import { getSettings, isSuppressed } from "@/lib/store/collections";
 import type { Account, EngagementEvent, OutreachTouch } from "@/lib/types";
 import { nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
@@ -33,6 +34,7 @@ export async function processDueTouches(
 ): Promise<DueTouchResult> {
   const result: DueTouchResult = { sent: 0, repTasks: 0, failed: 0, skipped: 0 };
   if (providers.outreach.ownsScheduling) return result;
+  const settings = await getSettings();
 
   const due = await store.listOutreach({ status: "scheduled", dueBefore: nowIso(), limit: opts.limit ?? 50 });
   const accounts = new Map<string, Account | null>();
@@ -44,6 +46,21 @@ export async function processDueTouches(
     if (["meeting_booked", "won", "lost", "disqualified"].includes(account.status)) {
       await store.updateOutreach({ ...touch, status: "skipped", note: `sequence stopped: account ${account.status}` });
       result.skipped++;
+      continue;
+    }
+    // Suppression / opt-out always wins.
+    const sup = await isSuppressed(account.contact?.email, account.domain);
+    if (sup) {
+      await store.updateOutreach({ ...touch, status: "skipped", note: `suppressed: ${sup.reason}` });
+      opts.activity?.(account.id, "touch_suppressed", `Step ${touch.step} skipped: ${sup.target} is suppressed (${sup.reason})`);
+      result.skipped++;
+      continue;
+    }
+    // Automation permission: when auto-send is off, every email becomes an approval task.
+    if (touch.channel === "email" && !settings.automation.autoSendEmail) {
+      await store.updateOutreach({ ...touch, status: "awaiting_rep", note: "auto-send is off; approve to send", taskUrl: account.contact?.email ? `mailto:${account.contact.email}` : undefined });
+      opts.activity?.(account.id, "approval_required", `Step ${touch.step} email waiting for approval (auto-send off)`);
+      result.repTasks++;
       continue;
     }
 
