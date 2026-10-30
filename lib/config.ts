@@ -19,13 +19,21 @@ function pick<T extends string>(name: string, allowed: readonly T[], fallback: T
   return allowed.includes(v) ? v : fallback;
 }
 
+const onVercel = Boolean(process.env.VERCEL);
+const vercelUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+
 export const config = {
-  appUrl: env("NEXT_PUBLIC_APP_URL", "http://localhost:3000"),
+  /** Public base URL. Falls back to Vercel's system URL so a first deploy needs no manual setting. */
+  appUrl: env("NEXT_PUBLIC_APP_URL") || (vercelUrl ? `https://${vercelUrl}` : "http://localhost:3000"),
   brandName: env("NEXT_PUBLIC_BRAND_NAME", "Cartage"),
   demoBanner: env("NEXT_PUBLIC_DEMO_BANNER", "true") !== "false",
 
-  store: pick("STORE_PROVIDER", ["file", "supabase"] as const, "file"),
-  dataDir: env("DATA_DIR", ".data"),
+  /** file (JSON on disk) | memory (ephemeral, for serverless demos) | supabase (production). */
+  store: pick("STORE_PROVIDER", ["file", "memory", "supabase"] as const, onVercel ? "memory" : "file"),
+  dataDir: env("DATA_DIR", onVercel ? "/tmp/outbound-intel" : ".data"),
+  /** Seed the synthetic dataset on boot when the store is empty (default on for ephemeral hosts). */
+  autoSeed: env("AUTO_SEED", onVercel ? "true" : "false") === "true",
+  autoSeedCount: envNumber("AUTO_SEED_COUNT", 60),
 
   supabase: {
     url: env("NEXT_PUBLIC_SUPABASE_URL") || env("SUPABASE_URL"),
@@ -145,7 +153,7 @@ export function isSupabaseConfigured(): boolean {
 /** A compact description of which adapters are active, for the dashboard and logs. */
 export function describeProviders(): Record<string, string> {
   return {
-    store: config.store === "supabase" && isSupabaseConfigured() ? "supabase" : "file",
+    store: config.store === "supabase" && isSupabaseConfigured() ? "supabase" : config.store === "memory" ? "memory (ephemeral)" : "file",
     llm: hasLlm() ? config.llm.model : "templates (no ANTHROPIC_API_KEY)",
     discovery: config.providers.discovery,
     enrichment: config.providers.enrichment,

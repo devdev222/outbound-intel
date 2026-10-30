@@ -18,7 +18,7 @@ import type {
  * to this interface.
  */
 export interface Store {
-  readonly kind: "file" | "supabase";
+  readonly kind: "file" | "memory" | "supabase";
 
   // Accounts
   listAccounts(): Promise<Account[]>;

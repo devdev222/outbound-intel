@@ -1,6 +1,7 @@
 import path from "node:path";
 import { config, isSupabaseConfigured } from "@/lib/config";
 import { FileStore } from "./file-store";
+import { MemoryStore } from "./memory-store";
 import { SupabaseStore } from "./supabase-store";
 import type { Store } from "./types";
 
@@ -27,6 +28,8 @@ export function getStore(): Store {
       );
     }
     store = new SupabaseStore(config.supabase.url, config.supabase.secretKey);
+  } else if (config.store === "memory") {
+    store = new MemoryStore();
   } else {
     store = new FileStore(path.resolve(process.cwd(), config.dataDir));
   }

@@ -15,7 +15,7 @@ import type {
 } from "@/lib/types";
 import type { Store } from "./types";
 
-type Collection =
+export type Collection =
   | "accounts"
   | "historical"
   | "events"
@@ -34,7 +34,7 @@ type Collection =
  * for anyone cloning the repo with no Supabase project; not for production.
  */
 export class FileStore implements Store {
-  readonly kind = "file" as const;
+  readonly kind: "file" | "memory" = "file";
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly dir: string) {}
@@ -43,7 +43,7 @@ export class FileStore implements Store {
     return path.join(this.dir, `${c}.json`);
   }
 
-  private async read<T>(c: Collection): Promise<T[]> {
+  protected async read<T>(c: Collection): Promise<T[]> {
     try {
       const raw = await fs.readFile(this.file(c), "utf8");
       return JSON.parse(raw) as T[];
@@ -53,7 +53,7 @@ export class FileStore implements Store {
     }
   }
 
-  private async write<T>(c: Collection, rows: T[]): Promise<void> {
+  protected async write<T>(c: Collection, rows: T[]): Promise<void> {
     await fs.mkdir(this.dir, { recursive: true });
     const target = this.file(c);
     const tmp = `${target}.${process.pid}.tmp`;

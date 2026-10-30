@@ -67,7 +67,13 @@ The Agents page shows each agent's cadence, last run, totals, the run log, and l
 ## Data and storage
 
 - `STORE_PROVIDER=file` (default) keeps JSON under `.data/`; zero setup.
+- `STORE_PROVIDER=memory` keeps everything in process memory. With `AUTO_SEED=true` each server instance seeds the deterministic synthetic dataset on boot, which is how the hosted demo runs. Data resets on cold starts and is not shared between instances, so treat it as a tour, not a system of record.
 - `STORE_PROVIDER=supabase` uses the schema in `supabase/migrations/0001_init.sql` through the server-only secret key; RLS is on with no policies, so the browser never reaches the database.
+
+## Deploying
+
+- **Hosted demo (ephemeral):** `vercel deploy --prod` from the repo root. On Vercel the defaults switch to the memory store with auto-seed, and the public URL is taken from Vercel's system environment, so no variables are required. Add `ANTHROPIC_API_KEY` in the project settings to get Claude-written content.
+- **Real deployment:** set `STORE_PROVIDER=supabase` with the Supabase URL and secret key, `NEXT_PUBLIC_APP_URL`, `CRON_SECRET`, and the provider variables from `.env.example`; run `npm run worker` on a long-running host (or a per-minute cron on `/api/agents/tick`) so the team runs around the clock.
 
 ## How scoring and learning work
 
