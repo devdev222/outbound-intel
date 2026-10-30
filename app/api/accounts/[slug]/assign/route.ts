@@ -16,8 +16,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
   const store = getStore();
   const found = await requireAccount(store, slug);
   if ("response" in found) return found.response;
-  const next = { ...found.account, ownerRepId: body.data.repId === undefined ? found.account.ownerRepId : body.data.repId, status: body.data.status ?? found.account.status };
-  const updated = await store.upsertAccount(next);
+  // Atomic: only owner/status change; concurrent engagement, pauses and outcomes are kept.
+  const updated = (await store.patchAccount(found.account.id, (cur) => ({ ...cur, ownerRepId: body.data.repId === undefined ? cur.ownerRepId : body.data.repId, status: body.data.status ?? cur.status }))) ?? found.account;
   await logActivity(store, updated.id, "rep", body.data.status ? "account_closed" : "account_assigned", body.data.status ? `Closed as ${body.data.status} by ${auth.user.name}` : `Assigned to ${body.data.repId ?? "nobody"} by ${auth.user.name}`, body.data.note ? [body.data.note] : []);
   await audit(auth.user, body.data.status ? "close_account" : "assign_account", slug, body.data.status ?? body.data.repId ?? "");
   return json({ ok: true, account: { slug: updated.slug, ownerRepId: updated.ownerRepId, status: updated.status } });

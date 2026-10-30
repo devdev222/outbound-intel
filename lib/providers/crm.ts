@@ -1,7 +1,11 @@
 import { config } from "@/lib/config";
 import { generateHistorical } from "@/lib/synthetic/generate";
 import type { Account, HistoricalRecord, Outcome } from "@/lib/types";
+import { z } from "zod";
+import { PermanentError } from "@/lib/engine/operations";
 import { httpJson } from "./http";
+
+const CrmAck = z.object({ id: z.union([z.string(), z.number()]).transform(String).optional() }).passthrough();
 import type { CrmProvider } from "./types";
 
 /**
@@ -11,14 +15,14 @@ import type { CrmProvider } from "./types";
  * difference between winners and non-converters, not just winners).
  */
 export class MockCrmProvider implements CrmProvider {
-  readonly name = "mock";
+  readonly name: string = "mock";
   constructor(private readonly seed = 7, private readonly size = 320) {}
 
   async exportHistorical(): Promise<HistoricalRecord[]> {
     return generateHistorical(this.size, this.seed);
   }
 
-  async logOutcome(): Promise<void> {}
+  async logOutcome(_account?: Account, _outcome?: Outcome, _key?: string): Promise<{ remoteId?: string | null } | void> {}
 }
 
 /**
@@ -57,20 +61,51 @@ export class HttpCrmProvider implements CrmProvider {
     }));
   }
 
-  async logOutcome(account: Account, outcome: Outcome): Promise<void> {
-    if (!config.crm.exportUrl) return;
-    await httpJson(`${config.crm.exportUrl.replace(/\/$/, "")}/outcomes`, {
-      method: "POST",
-      headers: this.headers(),
-      body: {
-        account_slug: account.slug,
-        company: account.companyName,
-        domain: account.domain,
-        outcome_type: outcome.outcomeType,
-        value: outcome.value,
-        notes: outcome.notes,
-        at: outcome.createdAt,
-      },
-    });
+  /**
+   * POST {CRM_EXPORT_URL}/outcomes with an Idempotency-Key. outcome_id is the
+   * stable external id; opportunity_id groups created -> won. A 4xx other than
+   * 408/409/429 is permanent; anything else is retried by the durable crm_sync
+   * operation. Response: optional { id } (the CRM record id), validated.
+   */
+  async logOutcome(account: Account, outcome: Outcome, idempotencyKey?: string): Promise<{ remoteId?: string | null }> {
+    if (!config.crm.exportUrl) throw new PermanentError("CRM_EXPORT_URL is not set");
+    try {
+      const { data } = await httpJson<unknown>(`${config.crm.exportUrl.replace(/\/$/, "")}/outcomes`, {
+        method: "POST",
+        headers: { ...this.headers(), ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}) },
+        body: {
+          outcome_id: outcome.id,
+          opportunity_id: outcome.opportunityId ?? null,
+          account_id: account.id,
+          account_slug: account.slug,
+          company: account.companyName,
+          domain: account.domain,
+          outcome_type: outcome.outcomeType,
+          value: outcome.value,
+          notes: outcome.notes,
+          source: outcome.source,
+          at: outcome.createdAt,
+        },
+      });
+      const parsed = CrmAck.safeParse(data ?? {});
+      return { remoteId: parsed.success ? (parsed.data.id ?? null) : null };
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status && status >= 400 && status < 500 && ![408, 409, 429].includes(status)) throw new PermanentError(`CRM rejected the outcome (${status}): ${(err as Error).message}`);
+      throw err;
+    }
+  }
+}
+
+/**
+ * Test CRM (CRM_PROVIDER=test): records each write keyed by idempotency key and
+ * can be told to fail (failNext("crm")). Used by the tests and the journey.
+ */
+export class TestCrmProvider extends MockCrmProvider {
+  override readonly name: string = "test";
+  async logOutcome(account: Account, outcome: Outcome, idempotencyKey?: string): Promise<{ remoteId?: string | null }> {
+    const { testStep } = await import("./testing");
+    await testStep("crm", idempotencyKey ?? `crm:${outcome.id}`, account.id, outcome.outcomeType);
+    return { remoteId: `crm_${outcome.id.slice(0, 8)}` };
   }
 }

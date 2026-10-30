@@ -1,4 +1,5 @@
 import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
+import { bodyKey, onceResponse } from "@/lib/engine/idempotency";
 import { config } from "@/lib/config";
 import { logActivity } from "@/lib/engine/activity";
 import { tavusToRecord } from "@/lib/providers/video";
@@ -28,12 +29,16 @@ export async function POST(req: Request) {
     return error("invalid JSON");
   }
   if (!body.video_id || !body.status) return error("video_id and status are required");
+  const videoId = body.video_id;
+  const videoStatus = body.status;
 
   const store = getStore();
+  // Persistent idempotency: a redelivered webhook returns the stored response instead of acting twice.
+  return onceResponse(store, "webhook:tavus", `${body.video_id}:${body.status}`, async () => {
   const account = (await store.listAccounts()).find((a) => a.campaign?.videoId === body.video_id);
   if (!account || !account.campaign) return json({ ok: true, matched: false });
 
-  const rec = tavusToRecord({ video_id: body.video_id, status: body.status as "ready" | "error" | "queued" | "generating" | "deleted", hosted_url: body.hosted_url, download_url: body.download_url, stream_url: body.stream_url, status_details: body.status_details });
+  const rec = tavusToRecord({ video_id: videoId, status: videoStatus as "ready" | "error" | "queued" | "generating" | "deleted", hosted_url: body.hosted_url, download_url: body.download_url, stream_url: body.stream_url, status_details: body.status_details });
   await store.upsertAccount({
     ...account,
     campaign: {
@@ -46,4 +51,5 @@ export async function POST(req: Request) {
   });
   await logActivity(store, account.id, "webhook", rec.status === "ready" ? "video_ready" : "video_failed", `Tavus callback: video ${rec.status}`, [rec.hostedUrl ?? "", rec.statusDetails ?? ""]);
   return json({ ok: true, matched: true, slug: account.slug, status: rec.status });
+  });
 }

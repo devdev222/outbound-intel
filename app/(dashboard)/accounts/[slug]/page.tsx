@@ -1,3 +1,4 @@
+import { isPhoneVerified } from "@/lib/engine/contact-fields";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ApproveFollowUp } from "@/components/bdr/ApproveFollowUp";
@@ -135,7 +136,7 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
       />
 
       {!ready && blockers.length > 0 && (
-        <div className="mb-5 rounded-[10px] border border-[#fed7aa] bg-[var(--warn-soft)] px-4 py-3 text-[13px]">
+        <div id="readiness" className="mb-5 scroll-mt-20 rounded-[10px] border border-[#fed7aa] bg-[var(--warn-soft)] px-4 py-3 text-[13px]">
           <div className="font-semibold text-[var(--warn)]">Not in the rep queue yet</div>
           <ul className="mt-1 list-disc pl-5 text-[var(--text-2)]">
             {blockers.map((b) => (
@@ -195,7 +196,17 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
           )}
         </Card>
 
-        <Card title="4 · Who to contact" hint={account.recommendedPersona ? `Persona: ${account.recommendedPersona}` : undefined}>
+        <Card id="contact" title="4 · Who to contact" hint={account.recommendedPersona ? `Persona: ${account.recommendedPersona}` : undefined}>
+          {account.contactHold && (
+            <div className="mb-2 rounded-md bg-[var(--warn-soft)] p-2 text-[12.5px]">
+              Outreach held since {fmtDate(account.contactHold.since).slice(0, 10)}: {account.contactHold.by} marked the previous contact wrong ({account.contactHold.reason}). The sequence is rebuilt once research verifies the right person.
+            </div>
+          )}
+          {account.enrichment?.lastError && (
+            <div className="mb-2 rounded-md bg-[var(--warn-soft)] p-2 text-[12.5px]">
+              Enrichment failed: {account.enrichment.lastError}. {account.enrichment.nextAttemptAt ? `Next automatic retry ${fmtDate(account.enrichment.nextAttemptAt)}.` : "Automatic retries stopped; fix the provider or add the contact by hand."}
+            </div>
+          )}
           {c ? (
             <div className="text-[13px]">
               <div className="text-[15px] font-semibold">{c.name}</div>
@@ -203,7 +214,7 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
               <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
                 {c.phone ? (
                   <span className="mono">
-                    {c.phone} {c.phoneVerified ? <Badge tone="good">verified</Badge> : <Badge>unverified</Badge>}
+                    {c.phone} {isPhoneVerified(c) ? <Badge tone="good">verified</Badge> : <Badge>unverified</Badge>}
                   </span>
                 ) : (
                   <span className="text-[var(--muted)]">no phone</span>
@@ -218,6 +229,16 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
             </div>
           ) : (
             <div className="text-[13px] text-[var(--muted)]">No decision-maker identified. {account.facts.people.length ? `${account.facts.people.length} people on file for Research to evaluate.` : "No people found yet."}</div>
+          )}
+          {(account.rejectedContacts ?? []).length > 0 && (
+            <div className="mt-2 text-[12px] text-[var(--muted)]">
+              Marked wrong (never re-selected): {(account.rejectedContacts ?? []).map((r) => `${r.name} (${r.by}, ${r.at.slice(0, 10)})`).join("; ")}
+            </div>
+          )}
+          {c?.fieldSources && Object.keys(c.fieldSources).length > 0 && (
+            <div className="mt-2 text-[11.5px] text-[var(--muted)]">
+              Sources: {Object.entries(c.fieldSources).map(([k, v]) => `${k} from ${v?.source}${v?.verified ? " (verified)" : ""}`).join(" · ")}
+            </div>
           )}
         </Card>
 
@@ -393,14 +414,16 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
                     ROI defaults: {camp.roiDefaults.shipmentsPerMonth.toLocaleString()} shipments/mo · {camp.roiDefaults.minutesPerShipment} min · ${camp.roiDefaults.hourlyCost}/hr · {camp.roiDefaults.coordinators} coordinators
                   </div>
                 </Card>
-                <VideoPanel slug={account.slug} campaign={camp} />
+                <div id="video" className="scroll-mt-20">
+                  <VideoPanel slug={account.slug} campaign={camp} />
+                </div>
               </>
             ) : (
               <Card title="Campaign">
                 <div className="text-[13px] text-[var(--muted)]">No campaign yet. Campaigns launch automatically once the account qualifies and passes readiness.</div>
               </Card>
             )}
-            <Card title={`Outreach sequence (${outreach.length})`}>
+            <Card id="sequence" title={`Outreach sequence (${outreach.length})`} hint={camp?.launchState && camp.launchState !== "live" ? `Launch ${camp.launchState}${camp.launchError ? `: ${camp.launchError}` : ""}` : camp?.sequence ? `Sequence: ${camp.sequence.name}` : undefined}>
               {outreach.length === 0 ? (
                 <div className="text-[13px] text-[var(--muted)]">No touches scheduled.</div>
               ) : (
@@ -417,7 +440,7 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
                     </thead>
                     <tbody>
                       {outreach.map((t) => (
-                        <tr key={t.id}>
+                        <tr key={t.id} id={`task-${t.id}`} className="scroll-mt-20">
                           <td>{t.step}</td>
                           <td>{t.channel}</td>
                           <td>
@@ -442,7 +465,7 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
               )}
             </Card>
             {alerts.length > 0 && (
-              <div className="space-y-3">
+              <div id="alerts" className="scroll-mt-20 space-y-3">
                 <h3 className="section-title">Rep alerts</h3>
                 {alerts.map((al) => (
                   <AlertCard key={al.id} alert={al} />

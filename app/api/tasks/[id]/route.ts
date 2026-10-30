@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { audit, requireApiRole } from "@/lib/auth";
+import { audit, requireActor } from "@/lib/auth";
 import { error, json, readJson } from "@/lib/api";
 import { TaskError, approveTask, completeManually, rescheduleTask, sendTaskNow, skipTask } from "@/lib/engine/tasks";
 import { getProviders } from "@/lib/providers";
@@ -22,7 +22,7 @@ const Body = z.discriminatedUnion("action", [
  *   Mark manually sent / Mark done -> complete_manual
  */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireApiRole(["bdr", "exec", "admin"]);
+  const auth = await requireActor(req, { roles: ["bdr", "exec", "admin"], scope: "tasks:write" });
   if ("response" in auth) return auth.response;
   const { id } = await params;
   const body = await readJson(req, Body);
@@ -34,23 +34,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     switch (cmd.action) {
       case "approve": {
         const task = await approveTask(store, providers, id, auth.user, { subject: cmd.subject, body: cmd.body, dueAt: cmd.dueAt });
-        await audit(auth.user, "task_approve", id, task.status);
+        await audit(auth.actor, "task_approve", id, task.status);
         return json({ ok: true, task });
       }
       case "send": {
         const r = await sendTaskNow(store, providers, id, auth.user);
-        await audit(auth.user, "task_send", id, r.state);
+        await audit(auth.actor, "task_send", id, r.state);
         if (r.state === "failed") return json({ ok: false, error: r.error ?? "delivery failed", task: r.task }, 502);
         return json({ ok: true, state: r.state, task: r.task, error: r.error });
       }
       case "complete_manual": {
         const task = await completeManually(store, id, auth.user, cmd.note);
-        await audit(auth.user, "task_complete_manual", id, task.status);
+        await audit(auth.actor, "task_complete_manual", id, task.status);
         return json({ ok: true, task });
       }
       case "skip": {
         const task = await skipTask(store, id, auth.user, cmd.reason);
-        await audit(auth.user, "task_skip", id, cmd.reason ?? "");
+        await audit(auth.actor, "task_skip", id, cmd.reason ?? "");
         return json({ ok: true, task });
       }
       case "reschedule": {

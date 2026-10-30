@@ -48,7 +48,7 @@ export default async function AssessPage({ params }: Params) {
 
   return (
     <div className={wrap}>
-      <Tracker slug={account.slug} accountId={account.id} campaignId={campaignIdFor(account)} isPreview={!account.campaign} />
+      <Tracker slug={account.slug} token={token} accountId={account.id} campaignId={campaignIdFor(account)} isPreview={!account.campaign} />
       {config.demoBanner && (
         <a className="cp-flag cp-flag--muted" href="/" role="note" title="Demo environment: company data on this page is synthetic">
           Demo · synthetic data

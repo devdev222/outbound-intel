@@ -143,6 +143,11 @@ try {
   check("BDR cannot run integration tests", (await call("POST", "/api/integrations/store/test", {}, bdr)).status === 403);
   check("BDR can read templates and sequences", (await call("GET", "/api/templates", undefined, bdr)).status === 200 && (await call("GET", "/api/sequences", undefined, bdr)).status === 200);
   check("BDR cannot upload templates or change the playbook", (await call("POST", "/api/templates", { files: [{ name: "a.txt", content: "Subject: x\n\nbody" }] }, bdr)).status === 403 && (await call("PUT", "/api/playbook", { defaults: { videoType: "rep" } }, bdr)).status === 403);
+  check("provider events need a machine token", (await call("POST", "/api/events", { eventId: "e-1", slug: "x", event: "email_reply" })).status === 401);
+  check("provider events reject an invalid machine token", (await fetch(`${BASE}/api/events`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer not-a-real-token" }, body: "{}" })).status === 401);
+  check("contract catalog is readable by a BDR", (await call("GET", "/api/v1", undefined, bdr)).status === 200);
+  check("BDR cannot run agents through the contract API", (await call("POST", "/api/v1/run_agent", { agentId: "scoring", idempotencyKey: "smoke-0001" }, bdr)).status === 403);
+  check("contract API validates input", (await call("POST", "/api/v1/log_outcome", { outcomeType: "nope" }, bdr)).status === 400);
   check("BDR can read the work queue", (await call("GET", "/api/work/queue", undefined, bdr)).status === 200);
   check("admin can read integration status", (await call("GET", "/api/integrations", undefined, admin)).status === 200);
   const storeTest = await call("POST", "/api/integrations/store/test", {}, admin);
@@ -157,6 +162,7 @@ try {
   check("meeting request requires a valid page token", (await call("POST", "/api/prospect/meeting-request", { slug: "nope", token: "abcdefgh", requestId: "smoke-req-0001", email: "a@b.co" })).status === 404);
   check("estimate requires a valid page token", (await call("POST", "/api/prospect/estimate", { slug: "nope", token: "abcdefgh", requestId: "smoke-req-0002", email: "a@b.co", inputs: {}, results: {} })).status === 404);
   check("tracking refuses estimate submissions", (await call("POST", "/api/track", { slug: "nope", event: "estimate_submitted" })).status === 400);
+  check("tracking refuses provider events and missing page tokens", (await call("POST", "/api/track", { slug: "nope", token: "abcdefgh", event: "email_reply", visitorId: "v-1234" })).status === 400 && (await call("POST", "/api/track", { slug: "nope", event: "page_view", visitorId: "v-1234" })).status === 400);
   check("opt-out rejects an unsigned link", (await fetch(`${BASE}/api/optout?a=x&e=a%40b.co&t=bad`)).status >= 400);
 } catch (err) {
   check("smoke run", false, (err as Error).message);

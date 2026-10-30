@@ -1,3 +1,4 @@
+import { isPhoneVerified } from "@/lib/engine/contact-fields";
 import { Card, Meter, PageHeader, Stat } from "@/components/ui";
 import { requireRole } from "@/lib/auth";
 import { getStore } from "@/lib/store";
@@ -30,7 +31,7 @@ export default async function DataSourcesPage() {
   const staleByThreshold = accounts.reduce((n, a) => n + a.signals.filter((s) => s.type !== "intent" && (Date.now() - new Date(s.detectedAt).getTime()) / 86_400_000 > freshness).length, 0);
 
   const withContact = accounts.filter((a) => a.contact).length;
-  const verifiedPhone = accounts.filter((a) => a.contact?.phone && a.contact.phoneVerified).length;
+  const verifiedPhone = accounts.filter((a) => isPhoneVerified(a.contact)).length;
   const anyPhone = accounts.filter((a) => a.contact?.phone).length;
   const email = accounts.filter((a) => a.contact?.email).length;
   const linkedin = accounts.filter((a) => a.contact?.linkedin).length;

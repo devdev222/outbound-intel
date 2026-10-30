@@ -40,7 +40,7 @@ export async function POST(req: Request) {
   const { task, replayed } = await requestEstimate(store, found.account, { requestId: d.requestId, name: d.name, email: d.email.toLowerCase(), inputs: d.inputs, results: d.results });
   if (!replayed) {
     const fresh = (await store.getAccountById(found.account.id)) ?? found.account;
-    const result = await recordEngagement(store, providers, fresh, { eventType: "estimate_submitted", properties: { email: d.email.toLowerCase(), source: d.source, taskId: task.id }, visitorId: d.visitorId ?? null });
+    const result = await recordEngagement(store, providers, fresh, { eventType: "estimate_submitted", properties: { email: d.email.toLowerCase(), source: d.source, taskId: task.id }, visitorId: d.visitorId ?? null, source: "page" });
     if (result.activationTriggered) void runAgent("jerry");
   }
   return json({ ok: true, taskId: task.id, replayed });

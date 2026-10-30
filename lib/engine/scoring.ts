@@ -1,4 +1,5 @@
 import type { Person, ScoreBreakdown, ScoringModel, Signal, Weights } from "@/lib/types";
+import { isPhoneVerified } from "./contact";
 import { clamp, round } from "@/lib/util";
 import { sizeBandFor } from "./signal-catalog";
 
@@ -91,7 +92,7 @@ export function accessScore(input: ScoreInput, model: ScoringModel): number {
   else if (input.contact.seniority === "vp" || input.contact.seniority === "director") score += 12;
   if (input.contact.email) score += 10;
   if (input.contact.linkedin) score += 10;
-  if (input.contact.phone) score += input.contact.phoneVerified ? 20 : 8;
+  if (input.contact.phone) score += isPhoneVerified(input.contact) ? 20 : 8;
   return clamp(score);
 }
 

@@ -159,7 +159,11 @@ export interface CrmProvider {
   /** Historical prospects with outcomes: the training set for the LEARN step. */
   exportHistorical(): Promise<HistoricalRecord[]>;
   /** Write an outcome back (meeting booked, deal won, ...). */
-  logOutcome(account: Account, outcome: Outcome): Promise<void>;
+  /**
+   * Write one outcome to the CRM. `idempotencyKey` (crm:<outcome id>) must be
+   * honored so retries never duplicate; outcome.id is the stable external id.
+   */
+  logOutcome(account: Account, outcome: Outcome, idempotencyKey?: string): Promise<{ remoteId?: string | null } | void>;
 }
 
 // Bundle ---------------------------------------------------------------------

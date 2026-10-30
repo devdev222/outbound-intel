@@ -8,6 +8,7 @@ import type { Account, Conversation, ConversationChannel, ConversationOutcome, N
 import { nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
 import { recordOutcome } from "./outcomes";
+import { markWrongContact } from "./contact";
 import { pauseAccount } from "./pause";
 import { getPlaybook, matchingObjections, playbookPrompt } from "./playbook";
 import { approveTask, createTask, providerCanSend } from "./tasks";
@@ -162,7 +163,8 @@ export async function logConversation(store: Store, providers: Providers, accoun
 
   // Follow-up email: a task. Never sent by logging alone; approval and delivery are separate steps.
   let followUp: Task | null = null;
-  if (input.outcome !== "not_interested") {
+  // No follow-up to a person the rep just said is the wrong contact; the account goes back to research.
+  if (input.outcome !== "not_interested" && input.outcome !== "wrong_contact") {
     const status: Task["status"] = settings.automation.requireFollowUpApproval ? "awaiting_approval" : providerCanSend(providers, "email") ? "scheduled" : "manual";
     followUp = await createTask(store, {
       account,
@@ -183,7 +185,7 @@ export async function logConversation(store: Store, providers: Providers, accoun
 
   // Committed next step (callback, meeting prep): a task the rep owns. Rescoring never replaces it.
   let commitment: Task | null = null;
-  if (input.callbackAt || intel.nextAction.type === "call" || intel.nextAction.type === "meeting_prep") {
+  if (input.outcome !== "wrong_contact" && (input.callbackAt || intel.nextAction.type === "call" || intel.nextAction.type === "meeting_prep")) {
     const meeting = intel.nextAction.type === "meeting_prep";
     commitment = await createTask(store, {
       account,
@@ -224,10 +226,14 @@ export async function logConversation(store: Store, providers: Providers, accoun
       const def = SIGNAL_CATALOG.find((s) => s.key === k)!;
       return { key: k, type: def.type, label: def.label, status: "verified", confidence: 0.95, detectedAt: now, agent: "research", evidence: [{ title: `Confirmed in ${input.channel} with ${account.contact?.name ?? "contact"}`, url: "", source: "conversation" }] };
     });
-  let updated: Account = { ...account, signals: [...account.signals, ...newSignals], nextAction: intel.nextAction, pendingActivation: null };
-  if (input.outcome === "wrong_contact") updated = { ...updated, status: "needs_enrichment" };
-  if (input.outcome === "connected" || input.outcome === "replied") updated = { ...updated, status: updated.status === "campaign_live" || updated.status === "qualified" ? "engaged" : updated.status };
-  updated = await store.upsertAccount(updated);
+  // Atomic patch of only what the conversation changes, applied to the latest account.
+  let updated: Account =
+    (await store.patchAccount(account.id, (cur) => {
+      const merged = [...cur.signals, ...newSignals.filter((n) => !cur.signals.some((s) => s.key === n.key))];
+      const status = (input.outcome === "connected" || input.outcome === "replied") && (cur.status === "campaign_live" || cur.status === "qualified") ? "engaged" : cur.status;
+      return { ...cur, signals: merged, nextAction: intel.nextAction, pendingActivation: null, status };
+    })) ?? account;
+  if (input.outcome === "wrong_contact") updated = (await markWrongContact(store, providers, account.id, user?.name ?? "rep", input.notes.trim() || "rep marked the contact as wrong")) ?? updated;
   if (pausedUntil) updated = (await pauseAccount(store, providers, updated, pausedUntil, `not now: ${intel.objections.join(", ") || "timing"}`, user?.name ?? "rep")).account;
 
   // Outcomes the learning loop should see. A rep-logged meeting_booked is a confirmed appointment.

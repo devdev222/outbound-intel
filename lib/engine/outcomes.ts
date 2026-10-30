@@ -3,6 +3,7 @@ import type { Store } from "@/lib/store";
 import type { Account, HistoricalRecord, Outcome, OutcomeType } from "@/lib/types";
 import { nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
+import { syncOutcomeToCrm } from "./crm-sync";
 
 /**
  * LEARN AGAIN (spec Phase 4). Every meeting booked, opportunity created, deal
@@ -62,6 +63,11 @@ const OPPORTUNITY_TYPES: OutcomeType[] = ["opportunity_created", "deal_won", "de
 /** Lifecycle order; outcomes never move an account backwards (a late "replied" cannot undo "won"). */
 const RANK: Partial<Record<Account["status"], number>> = { engaged: 1, hot: 1, meeting_booked: 2, won: 4, lost: 4, disqualified: 4 };
 
+/** Training-history stage order; higher never gets overwritten by lower. */
+export function historyRank(o: HistoricalRecord["outcome"]): number {
+  return o === "won" || o === "lost" ? 3 : o === "meeting" ? 2 : o === "no_response" ? 1 : 0;
+}
+
 export function defaultOpportunityId(accountId: string): string {
   return `opp_${accountId}`;
 }
@@ -84,23 +90,35 @@ export async function recordOutcome(
   };
   await store.insertOutcome(outcome);
 
-  providers.crm.logOutcome(account, outcome).catch((err) => console.warn(`[crm] ${(err as Error).message}`));
+  // Durable CRM write-back (operation crm:<outcome id>); failures retry and stay visible.
+  await syncOutcomeToCrm(store, providers, account, outcome);
 
   let fedBack = false;
   const histOutcome = HISTORY_OUTCOME[input.outcomeType];
   if (histOutcome) {
-    // One record per account, upserted by id: concurrent outcomes on other accounts are never overwritten.
-    await store.upsertHistorical(accountToHistorical(account, histOutcome, input.value));
-    fedBack = true;
+    // One record per account. A late or out-of-order outcome never regresses it:
+    // a "meeting" arriving after "won" is ignored; equal stages keep the newest.
+    const existing = await store.getHistorical(`loop_${account.id}`);
+    const next = accountToHistorical(account, histOutcome, input.value ?? existing?.dealValue ?? null);
+    if (!existing || historyRank(next.outcome) > historyRank(existing.outcome) || (historyRank(next.outcome) === historyRank(existing.outcome) && next.outcomeAt >= existing.outcomeAt)) {
+      await store.upsertHistorical(next);
+      fedBack = true;
+    }
   }
 
-  // Re-read so a concurrent update (another outcome, a rep assignment) is not overwritten with a stale copy.
-  const current = (await store.getAccountById(account.id)) ?? account;
-  const proposed = STATUS_FOR[input.outcomeType] ?? current.status;
-  // Move forward only; an equal-rank outcome (e.g. a meeting request on a hot account) keeps the current status.
-  const status = (RANK[proposed] ?? 0) > (RANK[current.status] ?? 0) ? proposed : current.status;
-  const closing = status === "won" || status === "lost" || status === "disqualified";
-  const updated = await store.upsertAccount({ ...current, status, pendingActivation: null, ...(closing ? { pausedUntil: null, pauseReason: null } : {}) });
+  // Atomic status change on the latest account: assignments, pauses and scores written concurrently are kept.
+  let before: Account["status"] = account.status;
+  let status: Account["status"] = account.status;
+  const updated =
+    (await store.patchAccount(account.id, (current) => {
+      before = current.status;
+      const proposed = STATUS_FOR[input.outcomeType] ?? current.status;
+      // Move forward only; an equal-rank outcome (e.g. a meeting request on a hot account) keeps the current status.
+      status = (RANK[proposed] ?? 0) > (RANK[current.status] ?? 0) ? proposed : current.status;
+      const closing = status === "won" || status === "lost" || status === "disqualified";
+      return { ...current, status, pendingActivation: null, ...(closing ? { pausedUntil: null, pauseReason: null } : {}) };
+    })) ?? account;
+  const current = { status: before };
 
   // A confirmed booking completes the open "send times" scheduling task.
   if (input.outcomeType === "meeting_booked") {

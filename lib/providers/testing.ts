@@ -45,6 +45,11 @@ export function effectsOf(op: string, accountId?: string) {
   return testControl().effects.filter((e) => e.op === op && (!accountId || e.accountId === accountId));
 }
 
+/** Shared by test adapters in other modules (e.g. TestCrmProvider). */
+export async function testStep(op: string, key: string, accountId: string, detail?: string): Promise<{ duplicate: boolean }> {
+  return step(op, key, accountId, detail);
+}
+
 async function step(op: string, key: string, accountId: string, detail?: string): Promise<{ duplicate: boolean }> {
   const c = testControl();
   const delay = c.delayMs[op] ?? 0;

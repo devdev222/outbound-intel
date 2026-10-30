@@ -1,4 +1,5 @@
 import { runAgent, tick } from "@/lib/agents/runtime";
+import { bodyKey, onceResponse } from "@/lib/engine/idempotency";
 import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
 import { logActivity } from "@/lib/engine/activity";
@@ -51,6 +52,8 @@ export async function POST(req: Request) {
   if (!company && !domain) return json({ ok: true, ignored: "no company" });
 
   const store = getStore();
+  // Persistent idempotency: a redelivered webhook returns the stored response instead of acting twice.
+  return onceResponse(store, "webhook:rb2b", bodyKey(JSON.stringify(p)), async () => {
   const providers = getProviders();
   const all = await store.listAccounts();
   const account =
@@ -59,6 +62,7 @@ export async function POST(req: Request) {
 
   if (account) {
     const r = await recordEngagement(store, providers, account, {
+      source: "provider",
       eventType: "visitor_identified",
       properties: { name, title, email: str("Business Email"), linkedin: str("LinkedIn URL"), capturedUrl, referrer: str("Referrer"), tags: str("Tags"), isRepeat, source: "rb2b" },
       visitorId: str("LinkedIn URL") || str("Business Email") || null,
@@ -84,10 +88,12 @@ export async function POST(req: Request) {
   const { account: created } = await ingestFacts(store, facts);
   await logActivity(store, created.id, "webhook", "rb2b_visitor_created_account", `New account from an identified website visitor${name ? ` (${name}${title ? `, ${title}` : ""})` : ""}`, [capturedUrl]);
   await recordEngagement(store, providers, created, {
+    source: "provider",
     eventType: "visitor_identified",
     properties: { name, title, capturedUrl, isRepeat, source: "rb2b", note: "new account created from website visitor" },
     visitorId: str("LinkedIn URL") || null,
   });
   void tick();
   return json({ ok: true, matched: false, created: created.slug });
+  });
 }

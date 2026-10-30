@@ -1,3 +1,4 @@
+import { isPhoneVerified } from "@/lib/engine/contact-fields";
 import Link from "next/link";
 import type { Alert } from "@/lib/types";
 import { fmtTime } from "./format";
@@ -38,7 +39,7 @@ export function AlertCard({ alert, showCompanyLink = false }: { alert: Alert; sh
             <div className="text-[var(--muted)]">{p.contact ? `${p.contact.name}, ${p.contact.title}` : "contact not identified"}</div>
             {p.contact?.phone && (
               <div className="mono">
-                {p.contact.phone} {p.contact.phoneVerified ? <span className="pill pill-good">verified</span> : <span className="pill pill-warn">unverified</span>}
+                {p.contact.phone} {isPhoneVerified(p.contact) ? <span className="pill pill-good">verified</span> : <span className="pill pill-warn">unverified</span>}
               </div>
             )}
           </div>

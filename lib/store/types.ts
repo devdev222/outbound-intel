@@ -33,6 +33,13 @@ export interface Store {
   getAccountById(id: string): Promise<Account | null>;
   getAccountBySlug(slug: string): Promise<Account | null>;
   upsertAccount(account: Account): Promise<Account>;
+  /**
+   * Atomic read-modify-write of one account. `fn` receives the LATEST stored
+   * account and returns the next one (or null for no change). Concurrent
+   * writers never overwrite each other's fields: file/memory stores serialize,
+   * Supabase uses compare-and-swap on updated_at with retries.
+   */
+  patchAccount(id: string, fn: (current: Account) => Account | null): Promise<Account | null>;
   upsertAccounts(accounts: Account[]): Promise<void>;
   deleteAllAccounts(): Promise<void>;
 
@@ -41,6 +48,7 @@ export interface Store {
   insertHistorical(records: HistoricalRecord[]): Promise<void>;
   /** Insert or replace ONE record by id (outcome feedback). Never rewrites other rows. */
   upsertHistorical(record: HistoricalRecord): Promise<void>;
+  getHistorical(id: string): Promise<HistoricalRecord | null>;
   /** Administrative full replacement (CRM re-import / demo seed only). */
   replaceHistorical(records: HistoricalRecord[]): Promise<void>;
 

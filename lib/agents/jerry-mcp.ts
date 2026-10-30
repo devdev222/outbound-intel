@@ -7,7 +7,7 @@ import type { Account, Person } from "@/lib/types";
  * Remote Jerry over MCP. When Cartage's Jerry already runs as a service that
  * speaks the Model Context Protocol, set JERRY_MODE=mcp and either
  * JERRY_MCP_URL (Streamable HTTP) or JERRY_MCP_COMMAND + JERRY_MCP_ARGS (stdio).
- * Two tools are called; rename them here if Jerry exposes different names.
+ * Two tools are called; map them with JERRY_TOOL_ENRICH / JERRY_TOOL_TALK if Jerry names them differently.
  *
  *   enrich_contact { name, title, email?, linkedin?, company, domain }
  *     -> { phone?, phone_verified?: boolean, linkedin?, email?, recent_news?: string[], tech_stack?: string[], notes?: string[] }
@@ -22,8 +22,9 @@ import type { Account, Person } from "@/lib/types";
  * Uses @modelcontextprotocol/sdk (v1.x): Client + StreamableHTTPClientTransport / StdioClientTransport.
  */
 
-const TOOL_ENRICH = "enrich_contact";
-const TOOL_TALK = "talk_track";
+/** Tool names on Jerry's MCP server; override when Cartage's Jerry exposes different names. */
+const toolEnrich = () => process.env.JERRY_TOOL_ENRICH?.trim() || "enrich_contact";
+const toolTalk = () => process.env.JERRY_TOOL_TALK?.trim() || "talk_track";
 
 type McpClient = import("@modelcontextprotocol/sdk/client/index.js").Client;
 type ToolResult = { content?: Array<{ type: string; text?: string }>; structuredContent?: unknown; isError?: boolean };
@@ -128,9 +129,17 @@ class JerryMcpClient {
             await client.connect(new StdioClientTransport({ command, args }));
           }
           // Validate the tool mapping once per connection.
-          const listed = await client.listTools();
-          this.tools = listed.tools.map((t) => t.name);
-          const missing = [TOOL_ENRICH, TOOL_TALK].filter((t) => !this.tools.includes(t));
+          // Paginated tool discovery: follow nextCursor until the server has listed everything.
+          const names: string[] = [];
+          let cursor: string | undefined;
+          for (let pageNo = 0; pageNo < 50; pageNo++) {
+            const listed = await client.listTools(cursor ? { cursor } : undefined);
+            names.push(...listed.tools.map((t) => t.name));
+            cursor = listed.nextCursor;
+            if (!cursor) break;
+          }
+          this.tools = names;
+          const missing = [toolEnrich(), toolTalk()].filter((t) => !this.tools.includes(t));
           if (missing.length) {
             await client.close().catch(() => undefined);
             throw new Error(`Jerry MCP server does not expose: ${missing.join(", ")} (has: ${this.tools.join(", ") || "none"})`);
@@ -179,9 +188,9 @@ class JerryMcpClient {
 
   /** Throws on any failure; callers record it as a visible enrichment blocker. */
   async enrichContactOrThrow(person: Person, account: Account): Promise<EnrichmentResult> {
-    const raw = await this.call(TOOL_ENRICH, { name: person.name, title: person.title, email: person.email, linkedin: person.linkedin, company: account.companyName, domain: account.domain });
+    const raw = await this.call(toolEnrich(), { name: person.name, title: person.title, email: person.email, linkedin: person.linkedin, company: account.companyName, domain: account.domain });
     const parsed = EnrichSchema.safeParse(raw);
-    if (!parsed.success) this.fail(`Jerry MCP ${TOOL_ENRICH} returned an unexpected shape: ${parsed.error.issues.map((i) => i.path.join(".")).join(", ")}`);
+    if (!parsed.success) this.fail(`Jerry MCP ${toolEnrich()} returned an unexpected shape: ${parsed.error.issues.map((i) => i.path.join(".")).join(", ")}`);
     const r = parsed.data;
     const phoneVerified = r.phone_verified === true && Boolean(r.phone ?? person.phone);
     this.lastSuccessAt = new Date().toISOString();
@@ -202,7 +211,7 @@ class JerryMcpClient {
   /** Talk track is optional polish: returns null on failure and the local template is used. */
   async talkTrack(account: Account, contact: Person | null, engagement: string[], signals: string[]): Promise<{ talkTrack: string; action: string; notes: string[] } | null> {
     try {
-      const raw = await this.call(TOOL_TALK, {
+      const raw = await this.call(toolTalk(), {
         company: account.companyName,
         contact: contact ? { name: contact.name, title: contact.title } : null,
         signals,

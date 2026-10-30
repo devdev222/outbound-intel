@@ -105,6 +105,17 @@ export class FileStore implements Store {
     });
   }
 
+  patchAccount(id: string, fn: (current: Account) => Account | null): Promise<Account | null> {
+    return this.mutate<Account, Account | null>("accounts", (rows) => {
+      const idx = rows.findIndex((a) => a.id === id);
+      if (idx < 0) return { rows, result: null };
+      const next = fn(structuredClone(rows[idx]));
+      if (!next) return { rows, result: rows[idx] };
+      rows[idx] = { ...next, id, updatedAt: new Date().toISOString() };
+      return { rows, result: rows[idx] };
+    });
+  }
+
   upsertAccounts(accounts: Account[]): Promise<void> {
     return this.mutate<Account, void>("accounts", (rows) => {
       const byId = new Map(rows.map((a) => [a.id, a]));
@@ -128,6 +139,10 @@ export class FileStore implements Store {
       rows: [...rows, ...records],
       result: undefined,
     }));
+  }
+
+  async getHistorical(id: string): Promise<HistoricalRecord | null> {
+    return (await this.read<HistoricalRecord>("historical")).find((r) => r.id === id) ?? null;
   }
 
   upsertHistorical(record: HistoricalRecord): Promise<void> {

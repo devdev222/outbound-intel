@@ -97,6 +97,17 @@ Without `ANTHROPIC_API_KEY` every agent uses a deterministic template path, so t
 - **Sequences** (`/playbook/sequences`): your cadences, step by step (day, channel, one of your templates or "engine writes it"), with an optional segment rule and priority. An account gets a Lab sequence arm first, then the best matching active sequence, then the default, then the built-in 5-touch sequence. Every sequence has a no-side-effect preview for a real account.
 - **Experimentation Lab** (`/lab`): each experiment answers one question by changing one setting (sequence, one step's template, angle, proof, page vs direct link, video, assessment invite, gift) against today's setting as the control. Two running experiments can't change the same setting. Accounts enroll as their campaigns launch; results say "collecting" until each arm reaches its sample size; "Roll out" makes the winner the default.
 
+## Production readiness: identity, integrity, contracts
+
+- **Sign-in.** Live mode refuses demo passwords. Set `AUTH_PROVIDER=oidc` with `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` and provision users with `npm run user:add -- <email> <role> [repId]`. Without that, nobody can sign in (fails closed) and `npm run check` says why.
+- **Telemetry vs provider events.** `/api/track` is public page telemetry only: it needs the page token, accepts page events only, ignores repeats and is score-capped per day. Page events never activate a rep on their own; an authenticated touch (signed webhook, `POST /api/events` with a machine token) must corroborate them.
+- **Wrong contact.** Removes the contact and its verification, holds contact-specific outreach, sends the account back to research (the person is never re-selected) and rebuilds the sequence for the next verified contact. History is kept.
+- **Idempotency.** Webhook deliveries, conversation submissions, outcome writes, `/api/v1` and MCP mutations are recorded once per key in the `operations` table.
+- **CRM write-back.** Durable: one operation per outcome (`crm:<outcome id>`, also the Idempotency-Key), retried with backoff by the Learning Agent, failures visible on the account and the Integrations page.
+- **Concurrency.** Account updates are atomic patches (compare-and-swap on Supabase), so engagement, assignments, pauses and outcomes never overwrite each other. Late outcomes never downgrade training history. Phone verification is bound to the verified number.
+- **Contracts.** `lib/contracts/operations.ts` defines each operation once (validated input/output, scope, errors, pagination, retry). The same definitions back `POST /api/v1/<name>`, the MCP server and `docs/CONTRACTS.md` (`npm run contracts:doc`).
+- **Capabilities.** `lib/capabilities.ts` is the single registry for provider selection, required settings, supported actions and kind (mock, test, built in, proposed bridge, vendor API). See `docs/INTEGRATIONS.md` for what each integration still needs and `docs/MCP.md` for MCP scopes and remote-access requirements.
+
 ## Running 24/7
 
 - `npm run worker` as a long-running process (Railway, Fly, ECS), sharing the database with the web app.
@@ -116,6 +127,7 @@ The Agents page shows each agent's cadence, last run, totals, the run log, and l
   psql "$DATABASE_URL" -f supabase/migrations/0002_activity_and_rep_tasks.sql
   psql "$DATABASE_URL" -f supabase/migrations/0003_documents_and_platform.sql
   psql "$DATABASE_URL" -f supabase/migrations/0004_reliability.sql
+  psql "$DATABASE_URL" -f supabase/migrations/0005_integrity.sql
   ```
 
   (or paste them in that order into the Supabase SQL editor). `0004` adds the account fields the app relies on (owner, readiness, next action, experiments, pipeline value, CRM owner, pause, enrichment state), task lifecycle columns, alert deliveries, opportunity ids, the `operations` table and `app_meta.schema_version`. `npm run check` and `GET /api/health` refuse to report ready until the schema version matches.
@@ -123,7 +135,7 @@ The Agents page shows each agent's cadence, last run, totals, the run log, and l
 ## Deploying
 
 - **Hosted demo (ephemeral):** `vercel deploy --prod` from the repo root. On Vercel the defaults switch to the memory store with auto-seed, and the public URL is taken from Vercel's system environment, so no variables are required. Add `ANTHROPIC_API_KEY` in the project settings to get Claude-written content.
-- **Real deployment:** set `APP_MODE=live`, `STORE_PROVIDER=supabase` with the Supabase URL and secret key (and all four migrations applied), `AUTH_SECRET` (32+ characters), `CRON_SECRET`, `NEXT_PUBLIC_APP_URL`, a real `ENRICHMENT_PROVIDER`, and every callback secret for the providers you enable (Clay, Tavus, Resend, Calendly). Run `npm run check` until it reports ready. Live mode turns off demo seed/reset and simulation, refuses unsigned callbacks, never treats mock enrichment as verified, cites only approved customer proof, and signs unsubscribe links per recipient. Run `npm run worker` on a long-running host (or a per-minute cron on `/api/agents/tick` with the `CRON_SECRET` bearer) so the team runs around the clock.
+- **Real deployment:** set `APP_MODE=live`, `STORE_PROVIDER=supabase` with the Supabase URL and secret key (and all five migrations applied), `AUTH_SECRET` (32+ characters), `CRON_SECRET`, `NEXT_PUBLIC_APP_URL`, a real `ENRICHMENT_PROVIDER`, and every callback secret for the providers you enable (Clay, Tavus, Resend, Calendly). Run `npm run check` until it reports ready. Live mode turns off demo seed/reset and simulation, refuses unsigned callbacks, never treats mock enrichment as verified, cites only approved customer proof, and signs unsubscribe links per recipient. Run `npm run worker` on a long-running host (or a per-minute cron on `/api/agents/tick` with the `CRON_SECRET` bearer) so the team runs around the clock.
 
 ## Testing and release checks
 

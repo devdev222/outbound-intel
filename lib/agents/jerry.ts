@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { isPhoneVerified } from "@/lib/engine/contact";
 import path from "node:path";
 import { z } from "zod";
 import { config } from "@/lib/config";
@@ -88,7 +89,7 @@ async function buildPayload(account: Account, ctx: AgentContext): Promise<{ payl
   const priorityBefore = account.scores?.total ?? 0;
 
   // 1. Enrich the contact. A failure is recorded on the account (visible blocker), never replaced with synthetic data.
-  let contact = account.contact ?? pickContact(account.facts.people, ctx.model);
+  let contact = account.contact ?? pickContact(account.facts.people, ctx.model, account);
   const enrichmentLines: string[] = [];
   if (contact) {
     const r = await enrichAccountContact(store, providers, account, contact);
@@ -138,7 +139,7 @@ async function buildPayload(account: Account, ctx: AgentContext): Promise<{ payl
         (team ? `\n\n# ${team}` : ""),
       user:
         `Prospect: ${account.companyName} (${account.industry}, ${account.employeeCount} employees, ${account.hqCity}, ${account.hqState}).\n` +
-        `Contact: ${contact ? `${contact.name}, ${contact.title}${contact.phone ? `, phone ${contact.phoneVerified && contact.verifiedBy !== "synthetic" ? "verified" : "unverified"}` : ", no phone"}` : "none"}.\n` +
+        `Contact: ${contact ? `${contact.name}, ${contact.title}${contact.phone ? `, phone ${isPhoneVerified(contact) && contact.verifiedBy !== "synthetic" ? "verified" : "unverified"}` : ", no phone"}` : "none"}.\n` +
         `Original signals: ${originalSignals.join("; ") || "none"}.\nPain hypothesis: ${account.painHypothesis ?? "n/a"}.\nMessaging angle: ${account.messagingAngle ?? account.campaign?.angle ?? "n/a"}.\n` +
         `Engagement in the last 48h (newest first): ${engagement.join("; ") || "none"}.\n` +
         `ROI calculator inputs: ${calc ? JSON.stringify(calc.properties) : "not used"}.\nPriority: ${priorityBefore} -> ${account.priority}.\n` +
@@ -280,10 +281,12 @@ export async function activateAccount(account: Account, ctx: AgentContext): Prom
     failedDest.length ? "some deliveries failed permanently; see Needs attention" : "",
   ]);
 
-  const latest = (await store.getAccountById(account.id)) ?? account;
-  const updated = await store.upsertAccount(
-    markAgentRun({ ...latest, contact: contact ?? latest.contact, lastAlertAt: nowIso(), pendingActivation: null, pendingActivationAt: null, status: latest.status === "meeting_booked" ? latest.status : "hot" }, "jerry"),
-  );
+  // Atomic: clear the activation on the latest account without overwriting concurrent changes.
+  // Only fill the contact if none is on file (a rep may have rejected or replaced it meanwhile).
+  const updated =
+    (await store.patchAccount(account.id, (latest) =>
+      markAgentRun({ ...latest, contact: latest.contact ?? (latest.contactHold ? null : contact), lastAlertAt: nowIso(), pendingActivation: null, pendingActivationAt: null, status: ["meeting_booked", "won", "lost", "disqualified"].includes(latest.status) ? latest.status : "hot" }, "jerry"),
+    )) ?? account;
   return { account: updated, alert, complete: true };
 }
 
@@ -312,7 +315,7 @@ export const jerryAgent: AgentDefinition = {
     let enriched = 0;
     let failed = 0;
     for (const a of blocked) {
-      const person = a.contact ?? pickContact(a.facts.people, ctx.model);
+      const person = a.contact ?? pickContact(a.facts.people, ctx.model, a);
       if (!person) {
         if (!a.agentRuns.jerry) {
           await ctx.store.upsertAccount(markAgentRun(a, "jerry"));

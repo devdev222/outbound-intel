@@ -1,6 +1,7 @@
 import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
-import { attemptLaunch, launchCampaign } from "@/lib/engine/campaign";
+import { attemptLaunch, launchCampaign, rebuildForNewContact } from "@/lib/engine/campaign";
+import { holdCanClear } from "@/lib/engine/contact";
 import { proposeGifts } from "@/lib/engine/gifting";
 import { processDueTouches } from "@/lib/engine/outreach";
 import { retryPauseSyncs } from "@/lib/engine/pause";
@@ -45,6 +46,13 @@ export const campaignAgent: AgentDefinition = {
       await ctx.store.upsertAccount(markAgentRun(launched, "campaign"));
     });
 
+    // Accounts whose contact was marked wrong: rebuild once a different contact is verified and ready.
+    let rebuilt = 0;
+    for (const a of all.filter((x) => x.contactHold && x.campaign && x.readiness?.ready && holdCanClear(x)).slice(0, ctx.batchSize)) {
+      await rebuildForNewContact(a, ctx);
+      rebuilt++;
+    }
+
     // Retry launches that are pending (transient failure) and due for another attempt.
     const retryable = all.filter((a) => a.campaign?.launchState === "pending" && !toLaunch.some((t) => t.id === a.id));
     let retried = 0;
@@ -69,6 +77,7 @@ export const campaignAgent: AgentDefinition = {
 
     const parts = [settings.automation.autoLaunchCampaigns ? `${toLaunch.length} campaigns built (${launchedLive} live, ${launchPending} launch pending)` : "campaign launch paused by automation settings"];
     if (retried) parts.push(`${retried} launch retries`);
+    if (rebuilt) parts.push(`${rebuilt} sequences rebuilt for new contacts`);
     if (pauseSynced) parts.push(`${pauseSynced} pause syncs recovered`);
     if (proposed) parts.push(`${proposed} gifts proposed`);
     if (due.sent) parts.push(`${due.sent} tasks delivered via ${ctx.providers.outreach.name}`);

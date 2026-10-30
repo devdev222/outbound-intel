@@ -20,7 +20,9 @@
     "check": "tsx scripts/check.ts",
     "smoke": "tsx scripts/smoke.ts",
     "verify": "npm run typecheck && npm test && npm run build && npm run smoke",
-    "journey": "tsx scripts/journey.ts"
+    "journey": "tsx scripts/journey.ts",
+    "user:add": "tsx scripts/user-add.ts",
+    "contracts:doc": "tsx scripts/contracts-doc.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.3.0",

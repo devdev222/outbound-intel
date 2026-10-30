@@ -1,9 +1,11 @@
 import { config } from "@/lib/config";
+import { isPhoneVerified } from "./contact";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
-import { conversations as convCol, getSettings, proofStories } from "@/lib/store/collections";
+import { conversations as convCol, getSettings, proofStories, reps } from "@/lib/store/collections";
 import type { Account, Alert, Conversation, NextAction, OutreachChannel, ProofStory, Task } from "@/lib/types";
 import { nowIso } from "@/lib/util";
+import { endOfDayIso, validTimezone } from "@/lib/time";
 import { getPlaybook } from "./playbook";
 import { rankProof } from "./proof";
 import { OPEN_STATUSES, type TaskAction, primaryActionFor } from "./tasks";
@@ -73,6 +75,7 @@ export interface QueueItem {
   /** Due tasks beyond the primary one. */
   moreTasks: number;
   attention: string[];
+  attentionItems: AttentionItem[];
   readinessBlockers: string[];
   pageUrl: string;
   pausedUntil: string | null;
@@ -85,6 +88,8 @@ export interface WorkQueue {
   generatedAt: string;
   items: QueueItem[];
   counts: Record<QueueCategory, number> & { all: number };
+  /** Timezone used for "due today" (the rep's, else the team's). */
+  timezone: string;
   /** Accounts left out because outreach is paused. */
   paused: number;
 }
@@ -109,24 +114,33 @@ function whyNowFor(a: Account, alert: Alert | undefined): string {
 
 const TASK_RANK: Partial<Record<Task["status"], number>> = { failed: 0, awaiting_approval: 1, manual: 2, scheduled: 3 };
 
-function endOfToday(): string {
-  const d = new Date();
-  d.setHours(23, 59, 59, 999);
-  return d.toISOString();
+/** End of today in the rep's timezone (or the team's), never the server's. */
+function endOfToday(tz: string): string {
+  return endOfDayIso(tz);
 }
 
-/** Attention reasons that need a person, independent of tasks due. */
-function attentionFor(a: Account, alert: Alert | undefined, failedTasks: Task[]): string[] {
-  const out: string[] = [];
-  for (const t of failedTasks) out.push(`${CHANNEL_LABEL[t.channel]} delivery failed${t.lastError ? `: ${t.lastError}` : ""}`);
-  if (a.enrichment?.lastError) out.push(`Enrichment failed: ${a.enrichment.lastError}`);
-  if (a.campaign?.launchState === "failed") out.push(`Sequence launch failed${a.campaign.launchError ? `: ${a.campaign.launchError}` : ""}`);
-  else if (a.campaign?.launchState === "pending" && a.campaign.launchError) out.push(`Sequence launch retrying: ${a.campaign.launchError}`);
-  if (a.campaign?.videoStatus === "failed") out.push("Personalized video failed to render");
+export interface AttentionItem {
+  text: string;
+  /** Short action label for the row's primary button. */
+  action: string;
+  /** Deep link to where this issue is fixed. */
+  href: string;
+}
+
+/** Attention reasons that need a person, each linking straight to where it is fixed. */
+function attentionFor(a: Account, alert: Alert | undefined, failedTasks: Task[]): AttentionItem[] {
+  const base = `/accounts/${a.slug}`;
+  const out: AttentionItem[] = [];
+  for (const t of failedTasks) out.push({ text: `${CHANNEL_LABEL[t.channel]} delivery failed${t.lastError ? `: ${t.lastError}` : ""}`, action: "Retry delivery", href: `${base}?tab=campaign#task-${t.id}` });
+  if (a.contactHold) out.push({ text: `Contact marked wrong by ${a.contactHold.by}; outreach held while research finds the right person`, action: "Review contact", href: `${base}#contact` });
+  if (a.enrichment?.lastError) out.push({ text: `Enrichment failed: ${a.enrichment.lastError}`, action: "Review enrichment", href: `${base}#contact` });
+  if (a.campaign?.launchState === "failed") out.push({ text: `Sequence launch failed${a.campaign.launchError ? `: ${a.campaign.launchError}` : ""}`, action: "Review launch", href: `${base}?tab=campaign#sequence` });
+  else if (a.campaign?.launchState === "pending" && a.campaign.launchError) out.push({ text: `Sequence launch retrying: ${a.campaign.launchError}`, action: "Review launch", href: `${base}?tab=campaign#sequence` });
+  if (a.campaign?.videoStatus === "failed") out.push({ text: "Personalized video failed to render", action: "Review video", href: `${base}?tab=campaign#video` });
   const failedDest = (alert?.deliveries ?? []).filter((d) => d.status === "failed");
-  for (const d of failedDest) out.push(`Rep alert to ${d.destination} failed${d.error ? `: ${d.error}` : ""}`);
-  if (a.status === "needs_enrichment") for (const b of a.readiness?.blockers ?? []) if (!out.some((o) => o.includes(b))) out.push(b);
-  if (a.nextAction?.type === "review") out.push(a.nextAction.reason);
+  for (const d of failedDest) out.push({ text: `Rep alert to ${d.destination} failed${d.error ? `: ${d.error}` : ""}`, action: "Review alert", href: `${base}?tab=campaign#alerts` });
+  if (a.status === "needs_enrichment") for (const b of a.readiness?.blockers ?? []) if (!out.some((o) => o.text.includes(b))) out.push({ text: b, action: "Review blocker", href: `${base}#readiness` });
+  if (a.nextAction?.type === "review") out.push({ text: a.nextAction.reason, action: "Review ownership", href: `${base}#readiness` });
   return out;
 }
 
@@ -141,7 +155,9 @@ export async function buildWorkQueue(store: Store, providers: Providers, repId: 
   ]);
   const objections = (await getPlaybook()).objections.slice(0, 4).map((o) => ({ objection: o.objection, response: o.response }));
   const now = nowIso();
-  const todayEnd = endOfToday();
+  const rep = repId ? await reps.get(repId) : null;
+  const timezone = validTimezone(rep?.timezone) ?? validTimezone(settings.timezone) ?? "UTC";
+  const todayEnd = endOfToday(timezone);
   const mine = (repId ? accounts.filter((a) => a.ownerRepId === repId) : accounts).filter((a) => !["won", "lost", "disqualified"].includes(a.status));
 
   const alertByAccount = new Map<string, Alert>();
@@ -166,7 +182,8 @@ export async function buildWorkQueue(store: Store, providers: Providers, repId: 
       .filter((q) => !isPaused || q.task.source === "rep" || q.task.source === "conversation" || q.task.source === "prospect")
       .sort((x, y) => (TASK_RANK[x.task.status] ?? 9) - (TASK_RANK[y.task.status] ?? 9) || x.task.scheduledFor.localeCompare(y.task.scheduledFor));
     const failed = due.filter((q) => q.task.status === "failed").map((q) => q.task);
-    const attention = attentionFor(a, alert, failed);
+    const attentionItems = attentionFor(a, alert, failed);
+    const attention = attentionItems.map((x) => x.text);
     const ready = Boolean(a.readiness?.ready);
     const intent = Boolean(a.status === "hot" || a.pendingActivation || a.engagementScore >= settings.automation.hotThreshold);
     const touchDue = Boolean(a.nextAction && ["call", "email", "linkedin"].includes(a.nextAction.type) && a.nextAction.dueAt <= todayEnd);
@@ -187,10 +204,12 @@ export async function buildWorkQueue(store: Store, providers: Providers, repId: 
     const firstName = a.contact?.name.split(" ")[0] ?? "the contact";
     if (category === "meetings") {
       primary = meetingTask ? { kind: "task", item: meetingTask } : { kind: "open", label: "Prepare for the meeting", href: `/accounts/${a.slug}` };
-    } else if (category === "now" && (a.contact?.phone && a.contact.phoneVerified ? true : a.nextAction?.type === "call")) {
-      primary = { kind: "call", label: `Call ${firstName}`, phone: a.contact?.phoneVerified ? (a.contact.phone ?? null) : null };
+    } else if (category === "now" && (isPhoneVerified(a.contact) || a.nextAction?.type === "call")) {
+      primary = { kind: "call", label: `Call ${firstName}`, phone: isPhoneVerified(a.contact) ? (a.contact?.phone ?? null) : null };
     } else if (category === "needs_attention" && !failed.length) {
-      primary = { kind: "open", label: a.enrichment?.lastError || a.status === "needs_enrichment" ? "Review blockers" : "Review", href: `/accounts/${a.slug}?tab=technical` };
+      // Straight to the specific issue, not a generic tab.
+      const first = attentionItems[0];
+      primary = { kind: "open", label: first?.action ?? "Review", href: first?.href ?? `/accounts/${a.slug}` };
     } else if (due[0]) {
       primary = { kind: "task", item: due[0] };
     } else {
@@ -229,6 +248,7 @@ export async function buildWorkQueue(store: Store, providers: Providers, repId: 
       tasks,
       moreTasks,
       attention,
+      attentionItems,
       readinessBlockers: a.readiness?.blockers ?? [],
       pageUrl: a.campaign?.pageUrl ?? `${config.appUrl}/for/${a.slug}`,
       pausedUntil: isPaused ? (a.pausedUntil ?? null) : null,
@@ -248,5 +268,5 @@ export async function buildWorkQueue(store: Store, providers: Providers, repId: 
 
   const counts = { now: 0, meetings: 0, follow_ups: 0, needs_attention: 0, all: items.length };
   for (const i of items) counts[i.category]++;
-  return { repId, generatedAt: now, items, counts, paused };
+  return { repId, generatedAt: now, items, counts, paused, timezone };
 }

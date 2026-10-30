@@ -365,6 +365,7 @@ export function buildTouches(account: Account, campaign: Campaign, copy: Campaig
 export async function launchCampaign(
   account: Account,
   ctx: { store: Store; providers: Providers; model: ScoringModel; log?: (s: string) => void },
+  opts: { revision?: number } = {},
 ): Promise<Account> {
   // Team defaults, then the configuration of whichever Lab arms (control or treatment) the account is in.
   const [{ assignments, overrides }, settings, playbook] = await Promise.all([applyExperiments(account), getSettings(), getPlaybook()]);
@@ -398,6 +399,7 @@ export async function launchCampaign(
     launchError: null,
     sequenceId: null,
     sequence: { id: plan.sequence.id, name: plan.sequence.name },
+    revision: opts.revision ?? 0,
   };
 
   await ctx.store.insertOutreach(buildTouches(account, campaign, copy, proof, { ...plan, repName }));
@@ -413,7 +415,8 @@ export async function launchCampaign(
 export async function attemptLaunch(store: Store, providers: Providers, account: Account, log?: (s: string) => void): Promise<Account> {
   if (!account.campaign) return account;
   const touches = (await store.listOutreach({ accountId: account.id })).filter((t) => t.source === "sequence" || t.source === undefined);
-  const outcome = await runOperation(store, { id: `launch:${account.id}`, kind: "sequence_launch", accountId: account.id, destination: providers.outreach.name, maxAttempts: 5 }, async (key) => {
+  const rev = account.campaign.revision ?? 0;
+  const outcome = await runOperation(store, { id: rev ? `launch:${account.id}:r${rev}` : `launch:${account.id}`, kind: "sequence_launch", accountId: account.id, destination: providers.outreach.name, maxAttempts: 5 }, async (key) => {
     const r = await providers.outreach.launchSequence(account, touches, key);
     for (const t of r.touches) await store.updateOutreach(t);
     return { remoteId: r.sequenceId, result: { touches: r.touches.length } };
@@ -491,4 +494,17 @@ export async function previewSequence(account: Account, sequence: Sequence, mode
       source: tpl ? `template "${tpl.name}"${tpl.status === "approved" ? "" : " (draft)"}` : st?.templateId ? "template missing: engine copy" : "engine-written",
     };
   });
+}
+
+/**
+ * After a wrong contact: once research and enrichment put a different, verified
+ * contact on file and the account is ready again, rebuild the sequence for that
+ * person (new tasks, new launch key) and clear the hold. History is kept.
+ */
+export async function rebuildForNewContact(account: Account, ctx: { store: Store; providers: Providers; model: ScoringModel; log?: (s: string) => void }): Promise<Account> {
+  const revision = (account.campaign?.revision ?? 0) + 1;
+  const rebuilt = await launchCampaign({ ...account, contactHold: null }, ctx, { revision });
+  const saved = await ctx.store.patchAccount(account.id, (cur) => ({ ...cur, campaign: rebuilt.campaign, status: rebuilt.status, contactHold: null, experiments: rebuilt.experiments }));
+  await logActivity(ctx.store, account.id, "campaign", "sequence_rebuilt", `Sequence rebuilt for ${account.contact?.name ?? "the new contact"} (revision ${revision}); outreach hold cleared`);
+  return saved ?? rebuilt;
 }

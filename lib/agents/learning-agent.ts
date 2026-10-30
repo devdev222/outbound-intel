@@ -1,3 +1,4 @@
+import { retryCrmSyncs } from "@/lib/engine/crm-sync";
 import { learn } from "@/lib/engine/learn";
 import { type AgentDefinition } from "./base";
 
@@ -15,6 +16,9 @@ export const learningAgent: AgentDefinition = {
   cadenceSeconds: 120,
   step: 8,
   async run(ctx) {
+    // Durable CRM write-back: retry outcome syncs whose backoff elapsed.
+    const crm = await retryCrmSyncs(ctx.store, ctx.providers);
+    const crmNote = crm.synced || crm.failed ? `; CRM sync retries: ${crm.synced} synced, ${crm.failed} still failing` : "";
     const latest = await ctx.store.getLatestModel();
     const outcomes = await ctx.store.listOutcomes({ limit: 500 });
     const relevant = outcomes.filter((o) => ["meeting_booked", "opportunity_created", "deal_won", "deal_lost", "no_response"].includes(o.outcomeType));
@@ -23,7 +27,7 @@ export const learningAgent: AgentDefinition = {
     const untrained = latest ? history.length !== latest.baseline.n : history.length > 0;
 
     if (latest && newSince === 0 && !untrained) {
-      return { processed: 0, summary: `model v${latest.version} current (no new outcomes since ${latest.trainedAt.slice(0, 16).replace("T", " ")})` };
+      return { processed: 0, summary: `model v${latest.version} current (no new outcomes since ${latest.trainedAt.slice(0, 16).replace("T", " ")})${crmNote}` };
     }
 
     const model = await learn(ctx.store);
@@ -32,7 +36,7 @@ export const learningAgent: AgentDefinition = {
       processed: newSince || history.length,
       summary: `trained model v${model.version} on ${model.baseline.n} records (${newSince} new outcomes); weights ${Object.entries(model.weights)
         .map(([k, v]) => `${k} ${v}`)
-        .join(", ")}`,
+        .join(", ")}${crmNote}`,
     };
   },
 };

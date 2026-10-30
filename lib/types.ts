@@ -63,6 +63,34 @@ export interface Person {
    * "synthetic" for demo data. Readiness in live mode never accepts synthetic.
    */
   verifiedBy?: string | null;
+  /**
+   * The exact number (digits only) a provider verified. Phone verification is
+   * valid only while the current phone matches it; a new number is unverified.
+   */
+  phoneVerifiedNumber?: string | null;
+  /** Field-level provenance: which source supplied each field and whether it verified it. */
+  fieldSources?: Partial<Record<ContactField, FieldSource>>;
+}
+
+export type ContactField = "name" | "title" | "email" | "phone" | "linkedin";
+
+export interface FieldSource {
+  /** Provider or actor that supplied the value: "clay", "jerry-mcp", "http", "rep", "synthetic", ... */
+  source: string;
+  verified: boolean;
+  at: string;
+}
+
+/** A contact a rep marked as wrong; never re-selected for this account. */
+export interface RejectedContact {
+  name: string;
+  title?: string;
+  email?: string;
+  phone?: string;
+  linkedin?: string;
+  reason: string;
+  at: string;
+  by: string;
 }
 
 /** Enrichment status for the contact, so failures stay visible and retryable. */
@@ -331,6 +359,8 @@ export interface Campaign {
   proofStoryId?: string | null;
   /** The team sequence the tasks were built from. */
   sequence?: { id: string; name: string } | null;
+  /** Bumped when the sequence is rebuilt (e.g. for a new contact); part of the launch idempotency key. */
+  revision?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +418,13 @@ export interface Account {
   pausedUntil?: string | null;
   pauseReason?: string | null;
   enrichment?: EnrichmentState | null;
+  /** Contacts a rep marked wrong; research never re-selects them. */
+  rejectedContacts?: RejectedContact[];
+  /**
+   * Set when the contact was marked wrong: contact-specific outreach is held and
+   * the sequence is rebuilt for the next verified contact.
+   */
+  contactHold?: { since: string; reason: string; by: string } | null;
   /** Rep who owns the account in the queue (assigned when it becomes ready). */
   ownerRepId?: string | null;
   /** Latest readiness evaluation; accounts enter the BDR queue only when ready. */
@@ -584,10 +621,19 @@ export interface EngagementEvent {
   id: string;
   accountId: string;
   eventType: EventType | string;
+  /** properties._source records where the event came from (see EventSource). */
   properties: Record<string, unknown>;
   visitorId: string | null;
   createdAt: string;
 }
+
+/**
+ * page: public, unauthenticated page telemetry (anyone with the link can send it).
+ * provider: an authenticated delivery from a provider (signed webhook, machine token).
+ * internal: the platform or a signed-in user.
+ * Only provider/internal events, or page events corroborated by one, can activate a rep.
+ */
+export type EventSource = "page" | "provider" | "internal";
 
 export type OutcomeType =
   | "replied"
@@ -724,7 +770,7 @@ export type TaskStatus = OutreachStatus;
 // Durable operations (idempotent external side effects)
 // ---------------------------------------------------------------------------
 
-export type OperationKind = "sequence_launch" | "send" | "alert" | "dialer" | "sequence_pause" | "lease";
+export type OperationKind = "sequence_launch" | "send" | "alert" | "dialer" | "sequence_pause" | "lease" | "request" | "crm_sync";
 
 export interface Operation {
   /** Stable idempotency key, e.g. `send:<taskId>`, `alert:<activationId>:slack`. */
@@ -783,6 +829,8 @@ export interface Rep {
   id: string;
   name: string;
   email: string;
+  /** IANA timezone for due dates (falls back to the team timezone). */
+  timezone?: string;
   /** Conversations the rep can realistically start per working day. */
   capacityPerDay: number;
   active: boolean;
@@ -1045,7 +1093,8 @@ export interface AuditEntry {
   id: string;
   userId: string;
   userName: string;
-  role: Role;
+  /** "machine" for API tokens and MCP clients (userId is machine:<id> / mcp:<name>). */
+  role: Role | "machine";
   action: string;
   target: string;
   detail: string;
@@ -1067,6 +1116,8 @@ export interface PlatformSettings {
   economics: EconomicsSettings;
   /** What every campaign launches with unless a Lab experiment changes it. */
   defaults: CampaignDefaults;
+  /** IANA timezone used for "due today" and deadlines when a rep has none. */
+  timezone: string;
   updatedAt: string;
   updatedBy: string;
 }

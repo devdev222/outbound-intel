@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { isRejected, mergeContact } from "@/lib/engine/contact";
+import { bodyKey, onceResponse } from "@/lib/engine/idempotency";
 import { tick } from "@/lib/agents/runtime";
 import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
@@ -46,24 +48,22 @@ export async function POST(req: Request) {
     return error("invalid JSON");
   }
   const store = getStore();
+  // Persistent idempotency: a redelivered webhook returns the stored response instead of acting twice.
+  return onceResponse(store, "webhook:clay", bodyKey(JSON.stringify(raw)), async () => {
 
   const contact = ContactRow.safeParse(raw);
   if (contact.success) {
     const account = await store.getAccountBySlug(contact.data.account_slug);
     if (!account) return error("unknown account_slug", 404);
-    const prev = account.contact;
-    const updated = await store.upsertAccount({
-      ...account,
-      contact: {
-        name: contact.data.full_name ?? prev?.name ?? "",
-        title: contact.data.title ?? prev?.title ?? "",
-        seniority: prev?.seniority ?? "manager",
-        email: contact.data.email ?? prev?.email,
-        phone: contact.data.phone ?? prev?.phone,
-        phoneVerified: contact.data.phone_verified === true || contact.data.phone_verified === "true" || (Boolean(contact.data.phone) && prev?.phoneVerified) || false,
-        linkedin: contact.data.linkedin ?? prev?.linkedin,
-      },
-    });
+    // Field-level merge with provenance: a new number is never treated as verified unless Clay
+    // verified THAT number, and a different person never inherits the previous person's details.
+    const verified = contact.data.phone_verified === true || contact.data.phone_verified === "true";
+    const updated =
+      (await store.patchAccount(account.id, (cur) => {
+        const merged = mergeContact(cur.contact, { name: contact.data.full_name ?? undefined, title: contact.data.title ?? undefined, email: contact.data.email ?? undefined, phone: contact.data.phone ?? undefined, linkedin: contact.data.linkedin ?? undefined, phoneVerified: verified && Boolean(contact.data.phone ?? cur.contact?.phone) }, "clay");
+        if (isRejected(cur, merged)) return null;
+        return { ...cur, contact: merged };
+      })) ?? account;
     await logActivity(store, updated.id, "webhook", "clay_contact_enriched", "Clay returned enriched contact data", [
       contact.data.phone ? "phone received" : "no phone",
       contact.data.linkedin ? "LinkedIn received" : "no LinkedIn",
@@ -81,4 +81,5 @@ export async function POST(req: Request) {
   ]);
   void tick(); // let the team pick it up right away
   return json({ ok: true, kind: "company", created, slug: account.slug, page_url: `${config.appUrl}/for/${account.slug}` });
+  });
 }

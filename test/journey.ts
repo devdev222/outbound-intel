@@ -144,8 +144,12 @@ export async function runJourney(store: Store, opts: JourneyOptions): Promise<{ 
   assert.equal(effectsOf("send", a.id).length, 1, "exactly one email reached the provider");
   step("approved and delivered");
 
-  // Engagement crosses the threshold: Jerry alerts the rep and queues the call (alert fails once under faults).
-  const eng = await recordEngagement(store, providers, (await store.getAccountById(a.id))!, { eventType: "pricing_viewed", visitorId: "journey" });
+  // Engage: public page telemetry alone does not activate; an authenticated provider event
+  // (tracked email click) corroborates it. Then Jerry alerts the rep and queues the call.
+  const pageOnly = await recordEngagement(store, providers, (await store.getAccountById(a.id))!, { eventType: "video_75", visitorId: "journey-visitor", source: "page" });
+  assert.equal(pageOnly.activationTriggered, false, "uncorroborated page telemetry never activates");
+  await recordEngagement(store, providers, (await store.getAccountById(a.id))!, { eventType: "email_click", visitorId: "riley", source: "provider" });
+  const eng = await recordEngagement(store, providers, (await store.getAccountById(a.id))!, { eventType: "pricing_viewed", visitorId: "journey-visitor", source: "page" });
   assert.equal(eng.activationTriggered, true);
   if (opts.faults) failNext("alert", 1, "timeout");
   let activations = await workers(opts.faults, async () => activateAccount((await store.getAccountById(a.id))!, ctx));
@@ -189,14 +193,29 @@ export async function runJourney(store: Store, opts: JourneyOptions): Promise<{ 
   assert.equal((await store.getOutreach(m1.task.id))?.status, "done");
   step("meeting requested and confirmed");
 
-  // 12. Sync outcome: created then won is one opportunity.
+  // 12. Sync outcome: created then won is one opportunity. Under faults, the CRM write fails once and is retried.
+  if (opts.faults) failNext("crm", 1, "timeout");
   await recordOutcome(store, providers, (await store.getAccountById(a.id))!, { outcomeType: "opportunity_created", value: 100_000, source: "crm" });
   await recordOutcome(store, providers, (await store.getAccountById(a.id))!, { outcomeType: "deal_won", value: 100_000, source: "crm" });
   const opps = canonicalOpportunities(await store.listOutcomes({ accountId: a.id }));
   assert.equal(opps.length, 1);
   assert.equal(opps[0].value, 100_000);
   assert.equal((await store.getAccountById(a.id))?.status, "won");
-  step("outcome synced (1 opportunity, $100,000, won)");
+  // CRM sync: every outcome is written once, keyed by its outcome id (when a CRM adapter is active).
+  if (providers.crm.name !== "mock") {
+    const outcomes = await store.listOutcomes({ accountId: a.id });
+    for (const o of outcomes.filter((x) => ["meeting_booked", "opportunity_created", "deal_won"].includes(x.outcomeType))) {
+      let op = await store.getOperation(`crm:${o.id}`);
+      if (op?.status === "failed") {
+        await forceDue(store, op.id);
+        await (await import("@/lib/engine/crm-sync")).retryCrmSyncs(store, providers);
+        op = await store.getOperation(`crm:${o.id}`);
+      }
+      assert.equal(op?.status, "succeeded", `CRM sync for ${o.outcomeType}`);
+    }
+    if (providers.crm.name === "test") assert.equal(effectsOf("crm", a.id).length, outcomes.length, "one CRM write per outcome, no duplicates");
+  }
+  step(`outcome synced (1 opportunity, $100,000, won; CRM: ${providers.crm.name})`);
 
   return { accountId: a.id, steps };
 }

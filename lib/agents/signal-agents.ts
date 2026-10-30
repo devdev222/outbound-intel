@@ -1,4 +1,5 @@
 import { markAgentRun, mergeFacts } from "@/lib/engine/accounts";
+import { isRejected } from "@/lib/engine/contact";
 import { icpScore } from "@/lib/engine/scoring";
 import { SIGNAL_BY_KEY } from "@/lib/engine/signal-catalog";
 import type { Account, AgentId, CompanyFacts, Evidence, Person, Signal, SignalType } from "@/lib/types";
@@ -238,7 +239,9 @@ export const painPointAgent = makeSignalAgent({
 
 // --- ICP agent -------------------------------------------------------------------
 
-export function pickContact(people: Person[], model: AgentContext["model"]): Person | null {
+/** Best person to pursue; never one a rep already marked wrong for this account. */
+export function pickContact(people: Person[], model: AgentContext["model"], account?: Pick<Account, "rejectedContacts">): Person | null {
+  people = account ? people.filter((p) => !isRejected(account, p)) : people;
   if (!people.length) return null;
   const liftOf = (title: string) => model.icp.personas.find((p) => p.name === title && p.n >= 5)?.lift ?? 1;
   const seniorityRank: Record<Person["seniority"], number> = { vp: 5, director: 4, c_level: 3, manager: 2, ic: 1 };
@@ -256,7 +259,7 @@ export const icpAgent: AgentDefinition = {
     const accounts = (await ctx.store.listAccounts()).filter((a) => needsRun(a, "icp") || (a.agentRuns.icp ?? "") < ctx.model.trainedAt).slice(0, ctx.batchSize);
     let parked = 0;
     for (const account of accounts) {
-      const contact = account.contact ?? pickContact(account.facts.people, ctx.model);
+      const contact = account.contact ?? pickContact(account.facts.people, ctx.model, account);
       const topPersona = ctx.model.icp.personas.filter((p) => p.n >= 5)[0]?.name ?? "VP of Transportation";
       const fit = icpScore(
         { signals: [], industry: account.industry, employeeCount: account.employeeCount, contact, peopleCount: account.facts.people.length, painEvidenceCount: 0 },

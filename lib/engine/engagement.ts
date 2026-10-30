@@ -1,7 +1,7 @@
 import { config } from "@/lib/config";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
-import type { Account, EngagementEvent, Signal } from "@/lib/types";
+import type { Account, EngagementEvent, EventSource, Signal } from "@/lib/types";
 import { clamp, nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
 import { priorityFrom } from "./scoring";
@@ -158,6 +158,38 @@ export interface RecordEngagementInput {
   eventType: string;
   properties?: Record<string, unknown>;
   visitorId?: string | null;
+  /** Where the event came from. Defaults to "internal" (platform or signed-in user). */
+  source?: EventSource;
+}
+
+/** Events the public page may report. Everything else must arrive authenticated. */
+export const PAGE_EVENTS = new Set([
+  "page_view",
+  "section_view",
+  "scroll_depth",
+  "video_play",
+  "video_25",
+  "video_50",
+  "video_75",
+  "video_complete",
+  "video_rewatch",
+  "calculator_input",
+  "calculator_completed",
+  "case_study_viewed",
+  "pricing_viewed",
+  "booking_clicked",
+]);
+
+/** Public page telemetry can add at most this much engagement per account per day. */
+export const PAGE_SCORE_CAP_PER_DAY = 30;
+/** A page event counts toward activation only if an authenticated touch happened this recently. */
+export const CORROBORATION_DAYS = 14;
+/** Provider/internal events that show a real person received our outreach or identified themselves. */
+const CORROBORATING = new Set(["email_click", "email_open", "email_reply", "linkedin_accept", "linkedin_reply", "visitor_identified", "estimate_submitted", "booking_clicked_verified"]);
+
+export function eventSource(e: Pick<EngagementEvent, "properties">): EventSource {
+  const s = e.properties?._source;
+  return s === "page" || s === "provider" || s === "internal" ? s : "internal";
 }
 
 export interface RecordEngagementResult {
@@ -174,12 +206,13 @@ export async function recordEngagement(
   input: RecordEngagementInput,
 ): Promise<RecordEngagementResult> {
   const now = nowIso();
+  const source: EventSource = input.source ?? "internal";
   const events: EngagementEvent[] = [];
   const base: EngagementEvent = {
     id: uuid(),
     accountId: account.id,
     eventType: input.eventType,
-    properties: input.properties ?? {},
+    properties: { ...(input.properties ?? {}), _source: source },
     visitorId: input.visitorId ?? null,
     createdAt: now,
   };
@@ -197,7 +230,7 @@ export async function recordEngagement(
         id: uuid(),
         accountId: account.id,
         eventType: "return_visit_24h",
-        properties: { visitNumber: `${prior.length + 1}${prior.length + 1 === 2 ? "nd" : prior.length + 1 === 3 ? "rd" : "th"}` },
+        properties: { visitNumber: `${prior.length + 1}${prior.length + 1 === 2 ? "nd" : prior.length + 1 === 3 ? "rd" : "th"}`, _source: source },
         visitorId: input.visitorId,
         createdAt: now,
       };
@@ -213,42 +246,60 @@ export async function recordEngagement(
       .catch((err) => console.warn(`[analytics] ${(err as Error).message}`));
   }
 
-  // Fold into the account.
-  let next: Account = { ...account };
+  // Score delta. Public page telemetry is capped per account per day so scripted traffic cannot inflate it.
   let delta = 0;
   for (const e of events) delta += EVENT_WEIGHTS[e.eventType] ?? 1;
-  next.engagementScore = clamp(Math.round(next.engagementScore + delta));
-  for (const e of events) {
-    const sig = intentSignalFor(e.eventType, now);
-    if (sig && !next.signals.some((s) => s.key === sig.key)) next.signals = [...next.signals, sig];
+  const recent = await store.listEvents({ accountId: account.id, sinceIso: new Date(Date.now() - CORROBORATION_DAYS * 86_400_000).toISOString() });
+  if (source === "page") {
+    const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
+    const usedToday = recent.filter((e) => eventSource(e) === "page" && e.createdAt >= dayAgo && !events.some((x) => x.id === e.id)).reduce((sum, e) => sum + (EVENT_WEIGHTS[e.eventType] ?? 1), 0);
+    delta = Math.max(0, Math.min(delta, PAGE_SCORE_CAP_PER_DAY - usedToday));
   }
-  const total = next.scores?.total ?? 0;
-  next.priority = priorityFrom(total, next.engagementScore);
-  if (next.status === "campaign_live" || next.status === "qualified") next.status = "engaged";
 
-  // Threshold check -> flag for Jerry.
-  let reason: string | null = null;
+  // Activation policy: provider/internal intent activates; page intent only when corroborated by an
+  // authenticated touch (tracked email click/open/reply, LinkedIn, identified visitor, prospect submission).
+  const corroborated = source !== "page" || recent.some((e) => eventSource(e) !== "page" && CORROBORATING.has(e.eventType));
   const highIntent = events.find((e) => isHighIntentEvent(e.eventType));
-  if (highIntent) reason = describeEvent(highIntent);
-  else if (next.engagementScore >= config.engine.hotThreshold) reason = `engagement score reached ${next.engagementScore}`;
 
-  const cooldownOk = !next.lastAlertAt || Date.now() - new Date(next.lastAlertAt).getTime() > config.engine.alertCooldownMinutes * 60_000;
-  const alreadyPending = Boolean(next.pendingActivation);
-  const terminal = next.status === "won" || next.status === "lost" || next.status === "disqualified";
+  // Atomic fold into the LATEST account: concurrent assignments, pauses, outcomes and score increments survive.
+  let reason: string | null = null;
   let activationTriggered = false;
-  if (reason && cooldownOk && !alreadyPending && !terminal) {
-    next.pendingActivation = reason;
-    next.pendingActivationAt = now;
-    next.status = next.status === "meeting_booked" ? next.status : "hot";
-    activationTriggered = true;
-  }
+  let before = { engagementScore: account.engagementScore, priority: account.priority };
+  const next =
+    (await store.patchAccount(account.id, (cur) => {
+      before = { engagementScore: cur.engagementScore, priority: cur.priority };
+      const n: Account = { ...cur };
+      n.engagementScore = clamp(Math.round(cur.engagementScore + delta));
+      for (const e of events) {
+        const sig = intentSignalFor(e.eventType, now);
+        if (sig && !n.signals.some((x) => x.key === sig.key)) n.signals = [...n.signals, sig];
+      }
+      n.priority = priorityFrom(n.scores?.total ?? 0, n.engagementScore);
+      if (n.status === "campaign_live" || n.status === "qualified") n.status = "engaged";
+      reason = null;
+      activationTriggered = false;
+      if (highIntent) reason = describeEvent(highIntent);
+      else if (n.engagementScore >= config.engine.hotThreshold && delta > 0) reason = `engagement score reached ${n.engagementScore}`;
+      const cooldownOk = !n.lastAlertAt || Date.now() - new Date(n.lastAlertAt).getTime() > config.engine.alertCooldownMinutes * 60_000;
+      const terminal = n.status === "won" || n.status === "lost" || n.status === "disqualified";
+      const paused = Boolean(n.pausedUntil && n.pausedUntil > now);
+      if (reason && corroborated && cooldownOk && !n.pendingActivation && !terminal && !paused && !n.contactHold) {
+        n.pendingActivation = reason;
+        n.pendingActivationAt = now;
+        n.status = n.status === "meeting_booked" ? n.status : "hot";
+        activationTriggered = true;
+      }
+      return n;
+    })) ?? account;
 
-  next = await store.upsertAccount(next);
   if (activationTriggered) {
     await logActivity(store, next.id, "system", "activation_flagged", `Engagement crossed the threshold: ${reason}`, [
-      `engagement ${account.engagementScore} -> ${next.engagementScore}, priority ${account.priority} -> ${next.priority}`,
+      `engagement ${before.engagementScore} -> ${next.engagementScore}, priority ${before.priority} -> ${next.priority}`,
+      `source: ${source}${source === "page" ? " (corroborated by an authenticated touch)" : ""}`,
       "handed to Jerry",
     ]);
+  } else if (reason && !corroborated) {
+    await logActivity(store, next.id, "system", "activation_withheld", `Page activity not yet corroborated: ${reason}`, ["public page telemetry alone cannot activate a rep; waiting for a tracked email click, reply, identified visitor or prospect request"]);
   }
   return { account: next, events, activationTriggered, reason };
 }

@@ -1,15 +1,9 @@
 import { config } from "@/lib/config";
-import { ConsoleAlertProvider, SlackAlertProvider } from "./alerts";
-import { NoopAnalyticsProvider, PostHogAnalyticsProvider } from "./analytics";
-import { HttpCrmProvider, MockCrmProvider } from "./crm";
+import { create } from "@/lib/capabilities";
 import { ClayDiscoveryProvider, ClaySignalCollector } from "./discovery/clay";
 import { MockDiscoveryProvider, MockSignalCollector } from "./discovery/mock";
 import { NativeSignalCollector } from "./discovery/native";
-import { ClayEnrichmentProvider, HttpEnrichmentProvider, MockEnrichmentProvider } from "./enrichment";
-import { CartageDialerProvider, CartageSequencerProvider, MockDialerProvider, MockOutreachProvider, ResendOutreachProvider } from "./outreach";
-import { TestAlertProvider, TestDialerProvider, TestEnrichmentProvider, TestOutreachProvider } from "./testing";
 import type { Providers, SignalCollector } from "./types";
-import { MockVideoProvider, TavusVideoProvider } from "./video";
 
 export type * from "./types";
 
@@ -47,27 +41,14 @@ export function getProviders(): Providers {
       technology: pickCollector(config.signalSources.technology),
       pain: pickCollector(config.signalSources.pain),
     },
-    enrichment:
-      config.providers.enrichment === "clay"
-        ? new ClayEnrichmentProvider()
-        : config.providers.enrichment === "http"
-          ? new HttpEnrichmentProvider()
-          : config.providers.enrichment === "test"
-            ? new TestEnrichmentProvider()
-            : new MockEnrichmentProvider(),
-    video: config.providers.video === "tavus" ? new TavusVideoProvider() : new MockVideoProvider(),
-    outreach:
-      config.providers.outreach === "sequencer"
-        ? new CartageSequencerProvider()
-        : config.providers.outreach === "resend"
-          ? new ResendOutreachProvider()
-          : config.providers.outreach === "test"
-            ? new TestOutreachProvider()
-            : new MockOutreachProvider(),
-    dialer: config.providers.dialer === "cartage" ? new CartageDialerProvider() : config.providers.dialer === "test" ? new TestDialerProvider() : new MockDialerProvider(),
-    analytics: config.providers.analytics === "posthog" ? new PostHogAnalyticsProvider() : new NoopAnalyticsProvider(),
-    alerts: config.providers.alerts === "slack" ? new SlackAlertProvider() : config.providers.alerts === "test" ? new TestAlertProvider() : new ConsoleAlertProvider(),
-    crm: config.providers.crm === "http" ? new HttpCrmProvider() : new MockCrmProvider(),
+    // Every adapter comes from the capability registry (lib/capabilities.ts).
+    enrichment: create("enrichment"),
+    video: create("video"),
+    outreach: create("outreach"),
+    dialer: create("dialer"),
+    analytics: create("analytics"),
+    alerts: create("alerts"),
+    crm: create("crm"),
   };
 
   globalThis.__outboundIntelProviders = providers;

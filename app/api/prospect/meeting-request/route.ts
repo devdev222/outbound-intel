@@ -37,7 +37,7 @@ export async function POST(req: Request) {
   const { task, replayed } = await requestMeeting(store, providers, found.account, { requestId: d.requestId, name: d.name, email: d.email.toLowerCase(), note: d.note, preferredTimes: d.preferredTimes });
   if (!replayed) {
     const fresh = (await store.getAccountById(found.account.id)) ?? found.account;
-    await recordEngagement(store, providers, fresh, { eventType: "booking_clicked", properties: { source: "request-form", taskId: task.id }, visitorId: d.visitorId ?? null });
+    await recordEngagement(store, providers, fresh, { eventType: "booking_clicked", properties: { source: "request-form", taskId: task.id }, visitorId: d.visitorId ?? null, source: "page" });
   }
   return json({ ok: true, taskId: task.id, replayed });
 }

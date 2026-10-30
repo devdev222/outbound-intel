@@ -42,7 +42,7 @@ Rough effort to wire each real system, assuming credentials are in hand:
 
 ---
 
-> **Database:** apply `supabase/migrations/0001_init.sql` through `0004_reliability.sql` in order before switching `STORE_PROVIDER=supabase`; `npm run check` verifies the schema version.
+> **Database:** apply `supabase/migrations/0001_init.sql` through `0005_integrity.sql` in order before switching `STORE_PROVIDER=supabase`; `npm run check` verifies the schema version.
 
 ## Supabase
 
