@@ -4,10 +4,12 @@ import { generateStructured } from "@/lib/llm";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
 import { conversations as convCol, getSettings } from "@/lib/store/collections";
-import type { Account, Conversation, ConversationChannel, ConversationOutcome, NextAction, OutreachTouch, Signal, User } from "@/lib/types";
+import type { Account, Conversation, ConversationChannel, ConversationOutcome, NextAction, Signal, Task, User } from "@/lib/types";
 import { nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
 import { recordOutcome } from "./outcomes";
+import { pauseAccount } from "./pause";
+import { approveTask, createTask, providerCanSend } from "./tasks";
 import { SIGNAL_CATALOG } from "./signal-catalog";
 
 /**
@@ -23,6 +25,10 @@ export interface LogConversationInput {
   outcome: ConversationOutcome;
   notes: string;
   repId?: string | null;
+  /** "Not now": how long to defer all outreach (default 30 days). */
+  pauseDays?: number;
+  /** A callback time the rep agreed with the prospect; becomes a committed task. */
+  callbackAt?: string;
 }
 
 const Schema = z.object({
@@ -133,43 +139,78 @@ export async function logConversation(store: Store, providers: Providers, accoun
     };
   }
 
-  // Follow-up as an outreach touch: approval-gated or scheduled right away.
-  const touch: OutreachTouch = {
-    id: uuid(),
-    accountId: account.id,
-    channel: "email",
-    step: 90 + Math.floor(Math.random() * 9),
-    subject: intel.followUp.subject,
-    body: intel.followUp.body,
-    status: settings.automation.requireFollowUpApproval ? "awaiting_rep" : "scheduled",
-    scheduledFor: nowIso(),
-    provider: "pending",
-    note: settings.automation.requireFollowUpApproval ? `follow-up drafted after ${input.outcome}; awaiting rep approval` : `follow-up after ${input.outcome}`,
-    taskUrl: account.contact?.email ? `mailto:${account.contact.email}` : undefined,
-  };
-  await store.insertOutreach([touch]);
+  // Pauses and commitments are decided by the outcome, not by the model.
+  const now = nowIso();
+  const pauseDays = input.outcome === "not_now" ? (input.pauseDays ?? 30) : null;
+  const pausedUntil = pauseDays ? new Date(Date.now() + pauseDays * 86_400_000).toISOString() : null;
+  if (pausedUntil) {
+    intel = { ...intel, nextAction: { type: "wait", label: `Paused until ${pausedUntil.slice(0, 10)}`, reason: "prospect asked to reconnect later; no outreach until then", dueAt: pausedUntil } };
+  }
+  if (input.callbackAt) {
+    intel = { ...intel, nextAction: { type: "call", label: "Call back as agreed", reason: "callback time agreed on the call", dueAt: input.callbackAt } };
+  }
+
+  const conversationId = uuid();
+  const repId = input.repId ?? user?.repId ?? account.ownerRepId ?? null;
+
+  // Follow-up email: a task. Never sent by logging alone; approval and delivery are separate steps.
+  let followUp: Task | null = null;
+  if (input.outcome !== "not_interested") {
+    const status: Task["status"] = settings.automation.requireFollowUpApproval ? "awaiting_approval" : providerCanSend(providers, "email") ? "scheduled" : "manual";
+    followUp = await createTask(store, {
+      account,
+      channel: "email",
+      title: pausedUntil ? `Check back with ${account.contact?.name.split(" ")[0] ?? "the contact"} after the pause` : `Follow up after the ${input.channel} (${input.outcome.replace(/_/g, " ")})`,
+      subject: intel.followUp.subject,
+      body: intel.followUp.body,
+      // A deferred follow-up is due when the pause ends, never before.
+      dueAt: pausedUntil ?? now,
+      status,
+      source: "conversation",
+      step: 90,
+      conversationId,
+      assigneeRepId: repId,
+      note: pausedUntil ? `due when the pause ends (${pausedUntil.slice(0, 10)})` : status === "awaiting_approval" ? "drafted from the conversation; review & approve to schedule" : undefined,
+    });
+  }
+
+  // Committed next step (callback, meeting prep): a task the rep owns. Rescoring never replaces it.
+  let commitment: Task | null = null;
+  if (input.callbackAt || intel.nextAction.type === "call" || intel.nextAction.type === "meeting_prep") {
+    const meeting = intel.nextAction.type === "meeting_prep";
+    commitment = await createTask(store, {
+      account,
+      channel: meeting ? "meeting" : "call",
+      title: meeting ? "Prepare for the meeting" : input.callbackAt ? `Call back ${account.contact?.name.split(" ")[0] ?? "the contact"} (agreed)` : intel.nextAction.label,
+      body: `${intel.nextAction.reason}.\n\n${intel.summary}`,
+      dueAt: intel.nextAction.dueAt,
+      status: "manual",
+      source: input.callbackAt ? "rep" : "conversation",
+      conversationId,
+      assigneeRepId: repId,
+    });
+  }
 
   const conversation: Conversation = {
-    id: uuid(),
+    id: conversationId,
     accountId: account.id,
-    repId: input.repId ?? user?.repId ?? null,
+    repId,
     channel: input.channel,
     outcome: input.outcome,
     notes: input.notes,
     summary: intel.summary,
     objections: intel.objections,
     signalsExtracted: intel.signalKeys,
-    followUpDraft: intel.followUp,
-    followUpTouchId: touch.id,
+    followUpDraft: followUp ? intel.followUp : null,
+    followUpTouchId: followUp?.id ?? null,
     nextAction: intel.nextAction,
-    approved: !settings.automation.requireFollowUpApproval,
+    approved: followUp ? followUp.status !== "awaiting_approval" : true,
     generatedBy: intel.generatedBy,
-    at: nowIso(),
+    at: now,
   };
   await convCol.put(conversation);
 
   // Account updates: confirmed signals, next action, status by outcome.
-  const now = nowIso();
   const newSignals: Signal[] = intel.signalKeys
     .filter((k) => !account.signals.some((s) => s.key === k))
     .map((k) => {
@@ -180,32 +221,35 @@ export async function logConversation(store: Store, providers: Providers, accoun
   if (input.outcome === "wrong_contact") updated = { ...updated, status: "needs_enrichment" };
   if (input.outcome === "connected" || input.outcome === "replied") updated = { ...updated, status: updated.status === "campaign_live" || updated.status === "qualified" ? "engaged" : updated.status };
   updated = await store.upsertAccount(updated);
+  if (pausedUntil) updated = (await pauseAccount(store, providers, updated, pausedUntil, `not now: ${intel.objections.join(", ") || "timing"}`, user?.name ?? "rep")).account;
 
-  // Outcomes that the learning loop should see.
-  if (input.outcome === "meeting_booked") await recordOutcome(store, providers, updated, { outcomeType: "meeting_booked", notes: intel.summary, source: user ? `rep:${user.name}` : "rep" });
-  else if (input.outcome === "not_interested") await recordOutcome(store, providers, updated, { outcomeType: "deal_lost", notes: `not interested: ${intel.objections.join(", ") || intel.summary}`, source: user ? `rep:${user.name}` : "rep" });
-  else if (input.outcome === "replied") await recordOutcome(store, providers, updated, { outcomeType: "replied", notes: intel.summary, source: user ? `rep:${user.name}` : "rep" });
+  // Outcomes the learning loop should see. A rep-logged meeting_booked is a confirmed appointment.
+  const source = user ? `rep:${user.name}` : "rep";
+  if (input.outcome === "meeting_booked") await recordOutcome(store, providers, updated, { outcomeType: "meeting_booked", notes: intel.summary, source });
+  else if (input.outcome === "not_interested") await recordOutcome(store, providers, updated, { outcomeType: "deal_lost", notes: `not interested: ${intel.objections.join(", ") || intel.summary}`, source });
+  else if (input.outcome === "replied") await recordOutcome(store, providers, updated, { outcomeType: "replied", notes: intel.summary, source });
 
   await logActivity(store, account.id, "rep", "conversation_logged", `${input.channel}: ${input.outcome.replace(/_/g, " ")} (${intel.generatedBy})`, [
     intel.summary,
     intel.objections.length ? `objections: ${intel.objections.join("; ")}` : "",
     intel.signalKeys.length ? `signals confirmed: ${intel.signalKeys.join(", ")}` : "",
     `next: ${intel.nextAction.label} (${intel.nextAction.reason})`,
-    touch.status === "awaiting_rep" ? "follow-up drafted, awaiting approval" : "follow-up scheduled",
+    pausedUntil ? `outreach paused until ${pausedUntil.slice(0, 10)}` : "",
+    followUp ? (followUp.status === "awaiting_approval" ? "follow-up drafted, awaiting approval (not sent)" : followUp.status === "scheduled" ? "follow-up scheduled for delivery" : "follow-up is a manual task") : "no follow-up (closed)",
+    commitment ? `committed: ${commitment.title} due ${commitment.scheduledFor.slice(0, 16).replace("T", " ")}` : "",
   ]);
   return conversation;
 }
 
-/** Rep approves (optionally edits) the follow-up; it becomes a scheduled touch (or a rep task if no sender). */
-export async function approveFollowUp(store: Store, conversationId: string, edits: { subject?: string; body?: string } | undefined, user: User): Promise<Conversation | null> {
+/** Review & approve the follow-up (optionally edited). It becomes scheduled; approval never sends it. */
+export async function approveFollowUp(store: Store, providers: Providers, conversationId: string, edits: { subject?: string; body?: string } | undefined, user: User): Promise<Conversation | null> {
   const conv = await convCol.get(conversationId);
   if (!conv) return null;
-  const touch = conv.followUpTouchId ? await store.getOutreach(conv.followUpTouchId) : null;
-  if (touch) {
-    await store.updateOutreach({ ...touch, subject: edits?.subject ?? touch.subject, body: edits?.body ?? touch.body, status: "scheduled", scheduledFor: nowIso(), note: `approved by ${user.name}` });
+  if (conv.followUpTouchId) {
+    const task = await store.getOutreach(conv.followUpTouchId);
+    if (task && task.status === "awaiting_approval") await approveTask(store, providers, task.id, user, edits);
   }
   const updated: Conversation = { ...conv, approved: true, followUpDraft: { subject: edits?.subject ?? conv.followUpDraft?.subject ?? "", body: edits?.body ?? conv.followUpDraft?.body ?? "" } };
   await convCol.put(updated);
-  await logActivity(store, conv.accountId, "rep", "follow_up_approved", `Follow-up approved by ${user.name}`);
   return updated;
 }

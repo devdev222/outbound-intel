@@ -238,6 +238,7 @@ export async function recordEngagement(
   let activationTriggered = false;
   if (reason && cooldownOk && !alreadyPending && !terminal) {
     next.pendingActivation = reason;
+    next.pendingActivationAt = now;
     next.status = next.status === "meeting_booked" ? next.status : "hot";
     activationTriggered = true;
   }

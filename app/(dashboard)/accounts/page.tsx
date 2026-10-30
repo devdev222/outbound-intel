@@ -59,7 +59,8 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Tabs
-          base={`/accounts${q || repFilter ? `?${new URLSearchParams({ ...(q ? { q } : {}), ...(repFilter ? { rep: repFilter } : {}) }).toString()}&` : ""}`.replace(/&$/, "")}
+          base="/accounts"
+          keep={{ q, rep: repFilter }}
           param="view"
           current={view}
           tabs={[

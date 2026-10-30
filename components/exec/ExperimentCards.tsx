@@ -51,7 +51,7 @@ export function ExperimentCards({ experiments }: { experiments: ExperimentCardDa
                               {cmp.lift > 0 ? "+" : ""}
                               {Math.round(cmp.lift * 100)}%
                             </span>
-                            {cmp.significant ? <Badge tone="good" title={`p = ${cmp.pValue}`}>significant</Badge> : <Badge title={cmp.sampleWarning ?? `p = ${cmp.pValue}`}>{cmp.sampleWarning ? "small sample" : "not significant"}</Badge>}
+                            {cmp.significant ? <Badge tone="good" title={`p = ${cmp.pValue}`}>significant</Badge> : <Badge title={cmp.sampleWarning ?? `p = ${cmp.pValue}`}>{cmp.sampleWarning ? (cmp.sampleWarning.startsWith("significance not computed") ? "not tested" : "small sample") : "not significant"}</Badge>}
                           </span>
                         )}
                       </td>

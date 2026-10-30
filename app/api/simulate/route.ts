@@ -1,6 +1,8 @@
+import { requireApiRole } from "@/lib/auth";
+import { isLive } from "@/lib/config";
 import { z } from "zod";
 import { runAgent } from "@/lib/agents/runtime";
-import { json, readJson, requireAccount } from "@/lib/api";
+import { json, readJson, requireAccount, error } from "@/lib/api";
 import { caseStudyById } from "@/lib/content/case-studies";
 import { recordEngagement } from "@/lib/engine/engagement";
 import { getProviders } from "@/lib/providers";
@@ -18,6 +20,9 @@ const SCENARIOS = ["visit", "video", "calculator", "case_study", "return", "repl
  * show the result right away.
  */
 export async function POST(req: Request) {
+  const auth = await requireApiRole(["admin"]);
+  if ("response" in auth) return auth.response;
+  if (isLive()) return error("demo actions are disabled in live mode", 403);
   const body = await readJson(req, z.object({ slug: z.string(), scenario: z.enum(SCENARIOS), visitorId: z.string().optional() }));
   if (!body.ok) return body.response;
   const store = getStore();

@@ -1,4 +1,5 @@
 import type { Store } from "@/lib/store";
+import { canonicalOpportunities, pipelineOf } from "./opportunities";
 import { conversations as convCol, getSettings, reps as repCol } from "@/lib/store/collections";
 import type { Account, Conversation, Outcome, PlatformSettings, Rep } from "@/lib/types";
 
@@ -58,6 +59,8 @@ export async function capacityReport(store: Store, settingsIn?: PlatformSettings
   const [accounts, outcomes, reps, convs] = await Promise.all([store.listAccounts(), store.listOutcomes(), repCol.list(), convCol.list()]);
   const activeReps = reps.filter((r) => r.active);
   const recentOutcomes = outcomes.filter((o) => o.createdAt >= since);
+  const allOpps = canonicalOpportunities(outcomes);
+  const accountMap = new Map(accounts.map((a) => [a.id, a]));
   const recentConvs = convs.filter((c) => c.at >= since);
 
   const ready = accounts.filter((a) => a.readiness?.ready && !["won", "lost", "disqualified", "meeting_booked"].includes(a.status));
@@ -70,8 +73,10 @@ export async function capacityReport(store: Store, settingsIn?: PlatformSettings
     const ownIds = new Set(own.map((a) => a.id));
     const ro = recentOutcomes.filter((o: Outcome) => ownIds.has(o.accountId));
     const meetings = ro.filter((o) => o.outcomeType === "meeting_booked").length;
-    const opps = ro.filter((o) => o.outcomeType === "opportunity_created" || o.outcomeType === "deal_won").length;
-    const pipeline = ro.filter((o) => o.outcomeType === "opportunity_created" || o.outcomeType === "deal_won").reduce((s, o) => s + (o.value ?? accounts.find((a) => a.id === o.accountId)?.pipelineValue ?? settings.economics.avgOpportunityValue), 0);
+    const mineOpps = pipelineOf(allOpps, accountMap, settings.economics.avgOpportunityValue, { since, accountIds: ownIds });
+    const opps = mineOpps.count;
+    const pipeline = mineOpps.value;
+    void ro;
     const perDay = rc.length / WORKDAYS_30;
     return {
       rep,
@@ -90,7 +95,7 @@ export async function capacityReport(store: Store, settingsIn?: PlatformSettings
   const conversationsPerDay = perRep.reduce((s, r) => s + r.conversationsPerDay, 0);
   const meetingsBooked = recentOutcomes.filter((o) => o.outcomeType === "meeting_booked").length;
   const meetingsHeld = Math.round(meetingsBooked * settings.economics.meetingHoldRate);
-  const opportunities = recentOutcomes.filter((o) => o.outcomeType === "opportunity_created" || o.outcomeType === "deal_won").length;
+  const opportunities = pipelineOf(allOpps, accountMap, settings.economics.avgOpportunityValue, { since }).count;
   const pipeline = perRep.reduce((s, r) => s + r.pipeline30d, 0);
   const monthlyCost = activeReps.length * settings.economics.repFullyLoadedMonthly + settings.economics.toolingMonthly;
   const utilization = capacityPerDay ? conversationsPerDay / capacityPerDay : 0;

@@ -1,5 +1,6 @@
 import { config } from "@/lib/config";
 import { activityEntry } from "@/lib/engine/activity";
+import { acquireLease, releaseLease } from "@/lib/engine/operations";
 import { bootstrapModel } from "@/lib/engine/learn";
 import { getProviders } from "@/lib/providers";
 import { getStore, type Store } from "@/lib/store";
@@ -20,9 +21,17 @@ import type { AgentContext } from "./base";
  * (Railway/Fly/ECS), or a scheduler hitting POST /api/agents/tick every minute
  * (Vercel Cron, GitHub Actions, Supabase pg_cron -> http). Both call the same
  * `tick()`. State (last run, totals, run log) lives in the store, so several
- * workers can share one database; a per-process lock stops the same agent
- * overlapping with itself inside a process.
+ * workers can share one database. Overlap protection is two-level: a
+ * per-process map returns the in-flight run, and a store lease
+ * (`lease:agent:<id>`, an atomic claim) stops two workers running the same
+ * agent at once. Agent settings are re-read before the run is recorded so an
+ * admin pausing an agent mid-run is never overwritten.
  */
+
+/** Lease length per agent run: long enough for a slow LLM batch, short enough to recover from a crashed worker. */
+function leaseMsFor(cadenceSeconds: number): number {
+  return Math.max(5 * 60_000, cadenceSeconds * 4_000);
+}
 
 declare global {
   // eslint-disable-next-line no-var
@@ -92,6 +101,13 @@ export function runAgent(agentId: AgentId, opts: { force?: boolean } = {}): Prom
       run.summary = "agent disabled";
       return run;
     }
+    const leaseName = `agent:${agentId}`;
+    if (!(await acquireLease(store, leaseName, leaseMsFor(def.cadenceSeconds)))) {
+      run.status = "skipped";
+      run.finishedAt = nowIso();
+      run.summary = "already running in another worker";
+      return run;
+    }
     await store.insertAgentRun(run);
     const log = (line: string) => {
       run.details.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
@@ -126,13 +142,16 @@ export function runAgent(agentId: AgentId, opts: { force?: boolean } = {}): Prom
       await flushActivity();
       run.finishedAt = nowIso();
       await store.updateAgentRun(run);
+      // Re-read: an admin may have paused or resumed this agent while it was running.
+      const fresh = await getState(store, agentId);
       await store.saveAgentState({
-        ...state,
+        ...fresh,
         lastRunAt: run.startedAt,
         lastStatus: run.status,
-        totalRuns: state.totalRuns + 1,
-        totalProcessed: state.totalProcessed + run.processed,
+        totalRuns: fresh.totalRuns + 1,
+        totalProcessed: fresh.totalProcessed + run.processed,
       });
+      await releaseLease(store, leaseName).catch((err) => console.warn(`[${def.id}] lease release failed: ${(err as Error).message}`));
     }
     return run;
   })();
@@ -220,6 +239,23 @@ export function stopLoop(): boolean {
   clearInterval(r.loop.timer);
   r.loop.timer = null;
   return true;
+}
+
+/** Stop the loop and wait (bounded) for in-flight runs to finish, so leases and run records are closed cleanly. */
+export async function drain(timeoutMs = 30_000): Promise<{ finished: number; abandoned: AgentId[] }> {
+  stopLoop();
+  const r = rt();
+  const inflight = [...r.running.entries()];
+  if (!inflight.length) return { finished: 0, abandoned: [] };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+  const all = Promise.allSettled(inflight.map(([, p]) => p));
+  const outcome = await Promise.race([all, timeout]);
+  if (timer) clearTimeout(timer);
+  if (outcome === "timeout") return { finished: inflight.length - r.running.size, abandoned: [...r.running.keys()] };
+  return { finished: inflight.length, abandoned: [] };
 }
 
 export function loopStatus() {

@@ -1,5 +1,5 @@
 import "./_env";
-import { loopStatus, startLoop, stopLoop } from "@/lib/agents/runtime";
+import { drain, loopStatus, startLoop } from "@/lib/agents/runtime";
 import { config, describeProviders } from "@/lib/config";
 
 /**
@@ -18,10 +18,14 @@ setInterval(() => {
   console.log(`[worker] ticks=${s.ticks} lastTick=${s.lastTickAt ?? "-"} inFlight=${s.inFlight.join(",") || "-"}`);
 }, 60_000).unref();
 
-const shutdown = () => {
-  stopLoop();
-  console.log("worker stopped");
+let stopping = false;
+const shutdown = async () => {
+  if (stopping) return;
+  stopping = true;
+  console.log("worker draining in-flight agent runs…");
+  const r = await drain(30_000);
+  console.log(`worker stopped (${r.finished} runs finished${r.abandoned.length ? `, abandoned: ${r.abandoned.join(", ")}; their leases expire on their own` : ""})`);
   process.exit(0);
 };
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());

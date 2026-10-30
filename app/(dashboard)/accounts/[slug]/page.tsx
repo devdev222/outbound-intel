@@ -7,7 +7,10 @@ import { ActivityTimeline } from "@/components/dashboard/ActivityTimeline";
 import { AlertCard } from "@/components/dashboard/AlertCard";
 import { EngagementSimulator } from "@/components/dashboard/EngagementSimulator";
 import { OutcomeButtons } from "@/components/dashboard/OutcomeButtons";
-import { RepTaskActions } from "@/components/dashboard/RepTaskActions";
+import { PauseControl } from "@/components/bdr/PauseControl";
+import { TaskActions } from "@/components/dashboard/TaskActions";
+import { isOpen, primaryActionFor } from "@/lib/engine/tasks";
+import { getProviders } from "@/lib/providers";
 import { ScoreBreakdown } from "@/components/dashboard/ScoreBreakdown";
 import { VideoPanel } from "@/components/dashboard/VideoPanel";
 import { outreachPillClass } from "@/components/dashboard/format";
@@ -90,7 +93,8 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
   const proofOutcome = proof ? (proof.story.outcomes.find((o) => o.verified) ?? proof.story.outcomes[0]) : null;
   const industry = model?.icp.industries.find((i) => i.name === account.industry);
   const owner = account.ownerRepId ? reps.find((r) => r.id === account.ownerRepId) : null;
-  const pendingTasks = outreach.filter((t) => t.status === "awaiting_rep");
+  const providers = getProviders();
+  const pendingTasks = outreach.filter((t) => t.status === "awaiting_approval" || t.status === "manual" || t.status === "failed");
   const preparedFollowUp = latestConv?.followUpDraft ?? (pendingTasks.find((t) => t.channel === "email") ? { subject: pendingTasks.find((t) => t.channel === "email")!.subject ?? "", body: pendingTasks.find((t) => t.channel === "email")!.body } : null);
   const opener = openerFor(account, latestAlert?.payload.talkTrack);
   const ready = account.readiness?.ready ?? false;
@@ -122,6 +126,7 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
           <>
             <Badge tone={account.status === "hot" ? "accent" : account.status === "won" ? "good" : account.status === "lost" || account.status === "disqualified" ? "bad" : "info"}>{account.status.replace(/_/g, " ")}</Badge>
             {ready ? <Badge tone="good">rep-ready</Badge> : account.readiness ? <Badge tone="warn">{blockers.length} readiness blocker{blockers.length === 1 ? "" : "s"}</Badge> : null}
+            {!["won", "lost", "disqualified"].includes(account.status) && <PauseControl slug={account.slug} pausedUntil={account.pausedUntil ?? null} pauseReason={account.pauseReason ?? null} />}
             <a href={pageUrl} target="_blank" rel="noreferrer" className="btn btn-sm">
               Personalized page ↗
             </a>
@@ -423,9 +428,9 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
                           <td className="max-w-md">
                             {t.subject && <div className="font-medium">{t.subject}</div>}
                             <div className="line-clamp-3 whitespace-pre-wrap text-[var(--text-2)]">{t.body}</div>
-                            {t.status === "awaiting_rep" && (
+                            {isOpen(t) && (
                               <div className="mt-1">
-                                <RepTaskActions touch={t} />
+                                <TaskActions task={t} action={primaryActionFor(t, providers)} compact />
                               </div>
                             )}
                           </td>

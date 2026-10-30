@@ -70,7 +70,27 @@ export function EmptyState({ title, body, action }: { title: string; body?: stri
   );
 }
 
-export function Tabs({ tabs, current, base, param = "tab" }: { tabs: { key: string; label: string; count?: number }[]; current: string; base: string; param?: string }) {
+export function Tabs({
+  tabs,
+  current,
+  base,
+  param = "tab",
+  keep = {},
+}: {
+  tabs: { key: string; label: string; count?: number }[];
+  current: string;
+  base: string;
+  param?: string;
+  /** Other query parameters to carry over (filters, rep, search). Empty values are dropped. */
+  keep?: Record<string, string | null | undefined>;
+}) {
+  const hrefFor = (key: string) => {
+    const [path, query = ""] = base.split("?");
+    const sp = new URLSearchParams(query);
+    for (const [k, v] of Object.entries(keep)) if (v) sp.set(k, v);
+    sp.set(param, key);
+    return `${path}?${sp.toString()}`;
+  };
   return (
     <nav className="mb-4 flex flex-wrap gap-1 border-b border-[var(--border)]">
       {tabs.map((t) => {
@@ -78,7 +98,7 @@ export function Tabs({ tabs, current, base, param = "tab" }: { tabs: { key: stri
         return (
           <Link
             key={t.key}
-            href={`${base}?${param}=${t.key}`}
+            href={hrefFor(t.key)}
             className={`-mb-px border-b-2 px-3 py-2 text-[13px] ${active ? "border-[var(--text)] font-semibold text-[var(--text)]" : "border-transparent text-[var(--muted)] hover:text-[var(--text)]"}`}
           >
             {t.label}

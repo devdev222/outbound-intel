@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { audit, requireApiRole } from "@/lib/auth";
 import { error, json, readJson } from "@/lib/api";
-import { decideGift, giftAttribution, newCampaign, proposeGifts, updateFulfillment } from "@/lib/engine/gifting";
+import { GiftTransitionError, decideGift, giftAttribution, newCampaign, proposeGifts, updateFulfillment } from "@/lib/engine/gifting";
 import { getStore } from "@/lib/store";
 import { giftCampaigns, gifts } from "@/lib/store/collections";
 
@@ -54,13 +54,15 @@ export async function POST(req: Request) {
       return json({ ok: true, proposed });
     }
     case "decide": {
-      const g = await decideGift(store, d.giftId, d.decision, auth.user, d.note);
+      const g = await decideGift(store, d.giftId, d.decision, auth.user, d.note).catch((e) => (e instanceof GiftTransitionError ? e : Promise.reject(e)));
+      if (g instanceof GiftTransitionError) return error(g.message, 409);
       if (!g) return error("unknown gift", 404);
       await audit(auth.user, `gift_${d.decision}`, g.id, `${g.amount} ${d.note ?? ""}`);
       return json({ ok: true, gift: g });
     }
     case "fulfill": {
-      const g = await updateFulfillment(store, d.giftId, d.status, auth.user);
+      const g = await updateFulfillment(store, d.giftId, d.status, auth.user).catch((e) => (e instanceof GiftTransitionError ? e : Promise.reject(e)));
+      if (g instanceof GiftTransitionError) return error(g.message, 409);
       if (!g) return error("unknown gift", 404);
       return json({ ok: true, gift: g });
     }

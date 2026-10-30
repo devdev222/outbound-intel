@@ -14,6 +14,8 @@ const Body = z.object({
   channel: z.enum(["call", "email", "linkedin", "meeting"]),
   outcome: z.enum(["connected", "voicemail", "no_answer", "replied", "meeting_booked", "not_interested", "not_now", "wrong_contact"]),
   notes: z.string().max(5000).default(""),
+  pauseDays: z.number().int().min(1).max(365).optional(),
+  callbackAt: z.iso.datetime().optional(),
 });
 
 /** Log a conversation; the engine summarizes, drafts the follow-up and sets the next action. */
@@ -25,7 +27,7 @@ export async function POST(req: Request) {
   const store = getStore();
   const found = await requireAccount(store, body.data.slug);
   if ("response" in found) return found.response;
-  const conversation = await logConversation(store, getProviders(), found.account, { channel: body.data.channel, outcome: body.data.outcome, notes: body.data.notes, repId: auth.user.repId ?? null }, auth.user);
+  const conversation = await logConversation(store, getProviders(), found.account, { channel: body.data.channel, outcome: body.data.outcome, notes: body.data.notes, repId: auth.user.repId ?? null, pauseDays: body.data.pauseDays, callbackAt: body.data.callbackAt }, auth.user);
   return json({ ok: true, conversation });
 }
 

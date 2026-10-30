@@ -15,7 +15,12 @@
     "demo": "tsx scripts/demo.ts",
     "reset": "tsx scripts/reset.ts",
     "worker": "tsx scripts/worker.ts",
-    "mcp": "tsx mcp/server.ts"
+    "mcp": "tsx mcp/server.ts",
+    "test": "node --import tsx --import ./test/setup.ts --test --test-concurrency=1 --test-force-exit \"test/**/*.test.ts\"",
+    "check": "tsx scripts/check.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "verify": "npm run typecheck && npm test && npm run build && npm run smoke",
+    "journey": "tsx scripts/journey.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.3.0",

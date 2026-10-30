@@ -5,6 +5,7 @@ import { angleFor } from "@/lib/engine/campaign";
 import { computeScores, priorityFrom } from "@/lib/engine/scoring";
 import { accountPipelineValue } from "@/lib/engine/capacity";
 import { assignOwner, evaluateReadiness, nextActionFor, readinessContextFor } from "@/lib/engine/readiness";
+import { committedOpenTasks } from "@/lib/engine/tasks";
 import { generateStructured, llmAvailable } from "@/lib/llm";
 import { getSettings } from "@/lib/store/collections";
 import type { Account, PlatformSettings, ScoreBreakdown, ScoringModel } from "@/lib/types";
@@ -111,7 +112,9 @@ async function scoreAccount(account: Account, ctx: AgentContext, explainWithLlm:
     status = qualifies ? (readiness.ready ? "qualified" : "needs_enrichment") : "scored";
   }
   const ownerRepId = status === "qualified" || (readiness.ready && !["discovered", "scored"].includes(status)) ? await assignOwner(ctx.store, account) : (account.ownerRepId ?? null);
-  const nextAction = nextActionFor({ ...account, status, pendingActivation: account.pendingActivation }, readiness);
+  // Committed tasks (callbacks, meetings, prospect requests) keep their due dates through rescoring.
+  const committed = committedOpenTasks(await ctx.store.listOutreach({ accountId: account.id }));
+  const nextAction = nextActionFor({ ...account, status, pendingActivation: account.pendingActivation }, readiness, committed);
   const pipelineValue = qualifies ? accountPipelineValue(account, settings) : (account.pipelineValue ?? null);
   if (!readiness.ready && qualifies && account.status !== "needs_enrichment") {
     ctx.activity(account.id, "readiness_blocked", `Qualifies (${scores.total}) but not rep-ready: ${readiness.blockers.length} blocker${readiness.blockers.length === 1 ? "" : "s"}`, readiness.blockers);

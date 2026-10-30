@@ -1,6 +1,7 @@
 // Load .env then .env.local (local overrides) for scripts and the MCP server,
 // mirroring Next.js precedence, without depending on Next internals.
-// Existing process.env values always win.
+// Values already in the shell environment always win; among files, later files
+// override earlier ones (.env < .env.development/.env.production < .env.local).
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -25,11 +26,13 @@ function parse(text: string): Record<string, string> {
 }
 
 const files = [".env", process.env.NODE_ENV === "production" ? ".env.production" : ".env.development", ".env.local"];
+const shell = new Set(Object.keys(process.env));
+const merged: Record<string, string> = {};
 for (const f of files) {
   try {
-    const vars = parse(readFileSync(path.resolve(process.cwd(), f), "utf8"));
-    for (const [k, v] of Object.entries(vars)) if (process.env[k] === undefined) process.env[k] = v;
+    Object.assign(merged, parse(readFileSync(path.resolve(process.cwd(), f), "utf8")));
   } catch {
     /* file absent */
   }
 }
+for (const [k, v] of Object.entries(merged)) if (!shell.has(k)) process.env[k] = v;

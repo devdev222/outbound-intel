@@ -1,3 +1,4 @@
+import { requireApiRole } from "@/lib/auth";
 import { json } from "@/lib/api";
 import { getStore } from "@/lib/store";
 
@@ -5,6 +6,8 @@ export const dynamic = "force-dynamic";
 
 /** Account list (summary fields). Filters: ?status=, ?q=, ?limit= */
 export async function GET(req: Request) {
+  const auth = await requireApiRole(["bdr", "exec", "admin"]);
+  if ("response" in auth) return auth.response;
   const url = new URL(req.url);
   const status = url.searchParams.get("status");
   const q = url.searchParams.get("q")?.toLowerCase() ?? "";

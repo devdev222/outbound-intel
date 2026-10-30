@@ -1,3 +1,4 @@
+import { requireApiRole } from "@/lib/auth";
 import { z } from "zod";
 import { loopStatus, startLoop, stopLoop } from "@/lib/agents/runtime";
 import { json, readJson } from "@/lib/api";
@@ -10,6 +11,8 @@ export const dynamic = "force-dynamic";
  * use /api/agents/tick from a scheduler or `npm run worker` instead.
  */
 export async function POST(req: Request) {
+  const auth = await requireApiRole(["admin"]);
+  if ("response" in auth) return auth.response;
   const body = await readJson(req, z.object({ action: z.enum(["start", "stop"]), intervalSeconds: z.number().int().min(5).max(3600).optional() }));
   if (!body.ok) return body.response;
   if (body.data.action === "start") startLoop(body.data.intervalSeconds);
@@ -18,5 +21,7 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
+  const auth = await requireApiRole(["admin"]);
+  if ("response" in auth) return auth.response;
   return json(loopStatus());
 }

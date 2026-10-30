@@ -7,6 +7,7 @@ import { MockDiscoveryProvider, MockSignalCollector } from "./discovery/mock";
 import { NativeSignalCollector } from "./discovery/native";
 import { ClayEnrichmentProvider, HttpEnrichmentProvider, MockEnrichmentProvider } from "./enrichment";
 import { CartageDialerProvider, CartageSequencerProvider, MockDialerProvider, MockOutreachProvider, ResendOutreachProvider } from "./outreach";
+import { TestAlertProvider, TestDialerProvider, TestEnrichmentProvider, TestOutreachProvider } from "./testing";
 import type { Providers, SignalCollector } from "./types";
 import { MockVideoProvider, TavusVideoProvider } from "./video";
 
@@ -51,20 +52,29 @@ export function getProviders(): Providers {
         ? new ClayEnrichmentProvider()
         : config.providers.enrichment === "http"
           ? new HttpEnrichmentProvider()
-          : new MockEnrichmentProvider(),
+          : config.providers.enrichment === "test"
+            ? new TestEnrichmentProvider()
+            : new MockEnrichmentProvider(),
     video: config.providers.video === "tavus" ? new TavusVideoProvider() : new MockVideoProvider(),
     outreach:
       config.providers.outreach === "sequencer"
         ? new CartageSequencerProvider()
         : config.providers.outreach === "resend"
           ? new ResendOutreachProvider()
-          : new MockOutreachProvider(),
-    dialer: config.providers.dialer === "cartage" ? new CartageDialerProvider() : new MockDialerProvider(),
+          : config.providers.outreach === "test"
+            ? new TestOutreachProvider()
+            : new MockOutreachProvider(),
+    dialer: config.providers.dialer === "cartage" ? new CartageDialerProvider() : config.providers.dialer === "test" ? new TestDialerProvider() : new MockDialerProvider(),
     analytics: config.providers.analytics === "posthog" ? new PostHogAnalyticsProvider() : new NoopAnalyticsProvider(),
-    alerts: config.providers.alerts === "slack" ? new SlackAlertProvider() : new ConsoleAlertProvider(),
+    alerts: config.providers.alerts === "slack" ? new SlackAlertProvider() : config.providers.alerts === "test" ? new TestAlertProvider() : new ConsoleAlertProvider(),
     crm: config.providers.crm === "http" ? new HttpCrmProvider() : new MockCrmProvider(),
   };
 
   globalThis.__outboundIntelProviders = providers;
   return providers;
+}
+
+/** Drop the cached bundle (tests switch providers between cases). */
+export function resetProviders(): void {
+  globalThis.__outboundIntelProviders = undefined;
 }

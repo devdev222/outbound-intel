@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { PUBLIC_PREFIXES, SESSION_COOKIE, canAccess, homeFor, verifySession } from "@/lib/auth/session";
+import { PUBLIC_PREFIXES, SESSION_COOKIE, authDisabled, canAccess, homeFor, verifySession } from "@/lib/auth/session";
 
 /**
  * Optimistic auth gate (Next.js 16 proxy): unauthenticated users go to /login,
@@ -8,7 +8,7 @@ import { PUBLIC_PREFIXES, SESSION_COOKIE, canAccess, homeFor, verifySession } fr
  */
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
-  if (process.env.AUTH_DISABLED === "true") return NextResponse.next();
+  if (authDisabled()) return NextResponse.next();
   if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p)) || pathname === "/favicon.ico") return NextResponse.next();
 
   const session = await verifySession(request.cookies.get(SESSION_COOKIE)?.value);

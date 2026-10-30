@@ -1,3 +1,4 @@
+import { requireApiRole } from "@/lib/auth";
 import { json, requireAccount } from "@/lib/api";
 import { getStore } from "@/lib/store";
 
@@ -5,6 +6,8 @@ export const dynamic = "force-dynamic";
 
 /** Full account detail with engagement, alerts, outreach and outcomes. */
 export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const auth = await requireApiRole(["bdr", "exec", "admin"]);
+  if ("response" in auth) return auth.response;
   const { slug } = await params;
   const store = getStore();
   const found = await requireAccount(store, slug);

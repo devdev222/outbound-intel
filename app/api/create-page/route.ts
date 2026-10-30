@@ -1,5 +1,5 @@
 import { runPipelineOnce } from "@/lib/agents/runtime";
-import { error, json, safeEqual } from "@/lib/api";
+import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
 import { ingestFacts } from "@/lib/engine/ingest";
 import { clayRowToFacts, type ClayRow } from "@/lib/providers/discovery/clay";
@@ -16,6 +16,8 @@ export const maxDuration = 120;
  * campaign; the page renders a preview until the campaign exists.
  */
 export async function POST(req: Request) {
+  const blocked = callbackSecretMissing(config.clay.inboundSecret, "CLAY_WEBHOOK_SECRET");
+  if (blocked) return blocked;
   if (config.clay.inboundSecret) {
     const header = req.headers.get("x-webhook-secret") ?? "";
     if (!safeEqual(header, config.clay.inboundSecret)) return error("unauthorized", 401);

@@ -58,6 +58,22 @@ export interface Person {
   linkedin?: string;
   phone?: string;
   phoneVerified?: boolean;
+  /**
+   * Who vouched for the contact data: a named enrichment provider, the rep, or
+   * "synthetic" for demo data. Readiness in live mode never accepts synthetic.
+   */
+  verifiedBy?: string | null;
+}
+
+/** Enrichment status for the contact, so failures stay visible and retryable. */
+export interface EnrichmentState {
+  attempts: number;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  provider: string | null;
+  /** Do not retry before this time (bounded exponential backoff). */
+  nextAttemptAt: string | null;
 }
 
 export interface JobPosting {
@@ -197,6 +213,16 @@ export interface Campaign {
   pageUrl: string;
   arms: ExperimentArms;
   launchedAt: string;
+  /**
+   * Sequence launch state. "live" only after the outreach provider acknowledged
+   * the launch; failures stay "failed" with the error and are retried.
+   */
+  launchState?: "pending" | "live" | "failed";
+  launchError?: string | null;
+  /** Remote sequence id returned by the provider (Sequencer). */
+  sequenceId?: string | null;
+  /** Approved proof story the copy cites, or null when none qualified. */
+  proofStoryId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +274,12 @@ export interface Account {
   lastAlertAt: string | null;
   /** When engagement crosses a threshold the monitor sets this; Jerry clears it when the rep is activated. */
   pendingActivation: string | null;
+  /** When the current activation was flagged; with the account id it forms the activation (alert) id. */
+  pendingActivationAt?: string | null;
+  /** Explicit deferral: no outreach (local or external) until this time. */
+  pausedUntil?: string | null;
+  pauseReason?: string | null;
+  enrichment?: EnrichmentState | null;
   /** Rep who owns the account in the queue (assigned when it becomes ready). */
   ownerRepId?: string | null;
   /** Latest readiness evaluation; accounts enter the BDR queue only when ready. */
@@ -451,6 +483,9 @@ export interface EngagementEvent {
 
 export type OutcomeType =
   | "replied"
+  /** Prospect asked for times; not an appointment. Creates a scheduling task. */
+  | "meeting_requested"
+  /** Confirmed appointment (calendar booking or rep-confirmed). */
   | "meeting_booked"
   | "opportunity_created"
   | "deal_won"
@@ -466,6 +501,12 @@ export interface Outcome {
   notes: string | null;
   source: string;
   createdAt: string;
+  /**
+   * Stable business identifier of the opportunity (CRM id when known, else
+   * `opp_<accountId>`). Created → won transitions share it, so counting and
+   * value never double.
+   */
+  opportunityId?: string | null;
 }
 
 export interface HotLeadAlert {
@@ -484,12 +525,23 @@ export interface HotLeadAlert {
   triggeredBy: string;
 }
 
+export interface Delivery {
+  destination: string;
+  status: "pending" | "succeeded" | "failed";
+  remoteId: string | null;
+  error: string | null;
+  attempts: number;
+  at: string;
+}
+
 export interface Alert {
   id: string;
   accountId: string;
   kind: "hot_lead" | "engagement" | "meeting_booked";
   payload: HotLeadAlert;
   deliveredVia: string[];
+  /** Per-destination delivery results (Slack, dialer, ...), tracked independently. */
+  deliveries?: Delivery[];
   createdAt: string;
 }
 
@@ -503,14 +555,26 @@ export interface CallQueueItem {
   createdAt: string;
 }
 
-export type OutreachChannel = "email" | "linkedin" | "inmail" | "gift";
+// ---------------------------------------------------------------------------
+// Tasks: the one authoritative record of work to do on an account
+// ---------------------------------------------------------------------------
+
+/** Message channels can be delivered by a provider; call / meeting / estimate are human work. */
+export type OutreachChannel = "email" | "linkedin" | "inmail" | "gift" | "call" | "meeting" | "estimate";
 
 /**
- * scheduled: waiting for its send time
- * awaiting_rep: due, but the active provider cannot send this channel; shown as a rep task
- * sent / skipped / failed: terminal
+ * awaiting_approval  drafted; a person must review before anything is scheduled
+ * scheduled          approved / planned; the scheduler delivers it when due (if the channel has a provider)
+ * sending            claimed by a worker; provider request in flight
+ * sent               provider acknowledged delivery, or a person recorded it as sent outside the platform
+ * manual             due work a person must do (LinkedIn, InMail, gift, call, scheduling) — no provider
+ * done               manual work completed (call made, meeting scheduled)
+ * skipped / failed   terminal; failed keeps lastError and is retryable by a person
  */
-export type OutreachStatus = "scheduled" | "awaiting_rep" | "sent" | "skipped" | "failed";
+export type OutreachStatus = "awaiting_approval" | "scheduled" | "sending" | "sent" | "manual" | "done" | "skipped" | "failed";
+
+/** Where a task came from. Rep and conversation commitments are never overwritten by rescoring. */
+export type TaskSource = "sequence" | "conversation" | "rep" | "prospect" | "agent" | "system";
 
 export interface OutreachTouch {
   id: string;
@@ -520,14 +584,57 @@ export interface OutreachTouch {
   subject?: string;
   body: string;
   status: OutreachStatus;
+  /** Due date. */
   scheduledFor: string;
   sentAt?: string;
   provider: string;
   externalId?: string;
   /** Why it failed or was handed to a rep. */
   note?: string;
-  /** Deep link for the rep task (LinkedIn profile, gifting vendor). */
+  /** Deep link for the rep task (LinkedIn profile, mailto, gifting vendor). */
   taskUrl?: string;
+  /** Short human label, e.g. "Call back Nina", "Send times for a meeting". */
+  title?: string;
+  source?: TaskSource;
+  assigneeRepId?: string | null;
+  /** Delivery attempts; bounded retries stop at MAX_SEND_ATTEMPTS. */
+  attempts?: number;
+  lastError?: string | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  completedBy?: string | null;
+  /** provider = delivered through an adapter; manual = a person recorded it. */
+  completionMode?: "provider" | "manual" | null;
+  conversationId?: string | null;
+}
+
+/** Tasks are the same records as outreach touches; the alias reads better in new code. */
+export type Task = OutreachTouch;
+export type TaskStatus = OutreachStatus;
+
+// ---------------------------------------------------------------------------
+// Durable operations (idempotent external side effects)
+// ---------------------------------------------------------------------------
+
+export type OperationKind = "sequence_launch" | "send" | "alert" | "dialer" | "sequence_pause" | "lease";
+
+export interface Operation {
+  /** Stable idempotency key, e.g. `send:<taskId>`, `alert:<activationId>:slack`. */
+  id: string;
+  kind: OperationKind;
+  accountId: string | null;
+  destination: string;
+  status: "pending" | "running" | "succeeded" | "failed" | "dead";
+  attempts: number;
+  maxAttempts: number;
+  leaseOwner: string | null;
+  leaseUntil: string | null;
+  nextAttemptAt: string | null;
+  remoteId: string | null;
+  lastError: string | null;
+  result: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +685,7 @@ export interface Rep {
 // ---------------------------------------------------------------------------
 
 export interface ReadinessCheck {
-  key: "icp_fit" | "decision_maker" | "contact" | "evidence" | "hypothesis" | "crm" | "suppression" | "next_action";
+  key: "icp_fit" | "decision_maker" | "contact" | "evidence" | "hypothesis" | "crm" | "suppression" | "enrichment" | "next_action";
   label: string;
   pass: boolean;
   detail: string;

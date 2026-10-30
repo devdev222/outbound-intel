@@ -1,3 +1,4 @@
+import { requireApiRole } from "@/lib/auth";
 import { z } from "zod";
 import { error, json, readJson, requireAccount } from "@/lib/api";
 import { logActivity } from "@/lib/engine/activity";
@@ -7,6 +8,8 @@ export const dynamic = "force-dynamic";
 
 /** A rep attaches their recorded clip (rep-video arm) or overrides the AI video. */
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const auth = await requireApiRole(["bdr", "exec", "admin"]);
+  if ("response" in auth) return auth.response;
   const { slug } = await params;
   const body = await readJson(req, z.object({ videoUrl: z.string().url(), thumbnailUrl: z.string().url().optional() }));
   if (!body.ok) return body.response;

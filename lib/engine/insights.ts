@@ -1,4 +1,5 @@
 import type { Store } from "@/lib/store";
+import { canonicalOpportunities, pipelineOf } from "./opportunities";
 import { experiments as expCol, getSettings } from "@/lib/store/collections";
 import type { Account, ExperimentResults, PlatformSettings, ScoringModel } from "@/lib/types";
 import { capacityReport, type CapacityReport } from "./capacity";
@@ -51,14 +52,15 @@ export async function execSummary(store: Store, windowDays = 30): Promise<ExecSu
 
   const meetingsBooked = recent.filter((o) => o.outcomeType === "meeting_booked").length;
   const meetingsHeld = Math.round(meetingsBooked * settings.economics.meetingHoldRate);
-  const oppOutcomes = recent.filter((o) => o.outcomeType === "opportunity_created" || o.outcomeType === "deal_won");
-  const opportunities = oppOutcomes.length;
-  const qualifiedPipeline = oppOutcomes.reduce((s, o) => s + (o.value ?? byAccount.get(o.accountId)?.pipelineValue ?? settings.economics.avgOpportunityValue), 0);
+  // Canonical opportunities: created -> won is one opportunity, valued once.
+  const opps = pipelineOf(canonicalOpportunities(outcomes), byAccount, settings.economics.avgOpportunityValue, { since });
+  const opportunities = opps.count;
+  const qualifiedPipeline = opps.value;
   const reps = Math.max(1, capacity.reps.length);
-  const won = recent.filter((o) => o.outcomeType === "deal_won");
+  const won = opps.opportunities.filter((o) => o.stage === "won");
 
   const kpis: Kpi[] = [
-    { key: "pipeline", label: "Qualified pipeline", value: qualifiedPipeline, format: "currency", hint: `${opportunities} opportunities in ${windowDays} days`, estimate: oppOutcomes.some((o) => o.value == null) },
+    { key: "pipeline", label: "Qualified pipeline", value: qualifiedPipeline, format: "currency", hint: `${opportunities} opportunities in ${windowDays} days`, estimate: opps.estimated },
     { key: "meetings", label: "Meetings booked / held", value: meetingsBooked, format: "int", hint: `~${meetingsHeld} held at ${Math.round(settings.economics.meetingHoldRate * 100)}% hold rate`, estimate: true },
     { key: "opps", label: "Qualified opportunities", value: opportunities, format: "int", hint: `${won.length} won` },
     { key: "pipeline_per_bdr", label: "Pipeline per BDR", value: Math.round(qualifiedPipeline / reps), format: "currency", hint: `${reps} active reps`, estimate: true },
@@ -129,7 +131,14 @@ export function buildRecommendations(input: { accounts: Account[]; model: Scorin
       const arm = e.results.arms.find((a) => a.armKey === winner.armKey);
       recs.push({ title: `Roll out "${arm?.name}" from ${e.name}`, why: `+${Math.round(winner.lift * 100)}% on ${e.primaryMetric.replace(/_/g, " ")} (p=${winner.pValue}).`, action: "Promote the treatment to the default and close the experiment.", evidence: e.results.arms.map((a) => `${a.name}: ${a.accounts} accounts, ${a.meetingsHeld} held, ${a.opportunities} opps`), priority: "medium" });
     } else if (underpowered && e.status === "running") {
-      recs.push({ title: `Keep "${e.name}" running`, why: underpowered.sampleWarning ?? "Not enough accounts per arm yet.", action: "Do not read into the direction until each arm has 30+ accounts.", evidence: e.results.arms.map((a) => `${a.name}: ${a.accounts} accounts`), priority: "low" });
+      const untestable = underpowered.sampleWarning?.startsWith("significance not computed");
+      recs.push({
+        title: untestable ? `Read "${e.name}" as directional` : `Keep "${e.name}" running`,
+        why: underpowered.sampleWarning ?? "Not enough accounts per arm yet.",
+        action: untestable ? "Switch the primary metric to meetings booked or opportunities for a significance test, or judge the lift with the sales team." : "Do not read into the direction until each arm has 30+ accounts.",
+        evidence: e.results.arms.map((a) => `${a.name}: ${a.accounts} accounts`),
+        priority: "low",
+      });
     }
   }
 

@@ -21,8 +21,19 @@ export interface SessionPayload {
 export const SESSION_COOKIE = "oi_session";
 const DEFAULT_SECRET = "dev-only-secret-set-AUTH_SECRET";
 
-export function authSecret(): string {
-  return process.env.AUTH_SECRET || DEFAULT_SECRET;
+/**
+ * Signing secret. In live mode a missing or short AUTH_SECRET returns null and
+ * every session is refused (no fallback); demo/test use a fixed dev secret.
+ * Reads process.env directly because the proxy may run where lib/config is not loaded.
+ */
+export function authSecret(): string | null {
+  const secret = process.env.AUTH_SECRET ?? "";
+  if (process.env.APP_MODE === "live") return secret.length >= 32 ? secret : null;
+  return secret || DEFAULT_SECRET;
+}
+
+export function authDisabled(): boolean {
+  return process.env.AUTH_DISABLED === "true" && process.env.APP_MODE !== "live";
 }
 
 function b64url(bytes: Uint8Array): string {
@@ -37,8 +48,10 @@ function fromB64url(s: string): Uint8Array {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
-async function hmac(data: string): Promise<string> {
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(authSecret()), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+export async function hmac(data: string, secretOverride?: string): Promise<string> {
+  const secret = secretOverride ?? authSecret();
+  if (!secret) throw new Error("AUTH_SECRET is not configured for live mode");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
   return b64url(new Uint8Array(sig));
 }
@@ -50,7 +63,7 @@ export async function signSession(user: User, ttlHours = 12): Promise<string> {
 }
 
 export async function verifySession(token: string | undefined | null): Promise<SessionPayload | null> {
-  if (!token) return null;
+  if (!token || !authSecret()) return null;
   const [body, sig] = token.split(".");
   if (!body || !sig) return null;
   const expected = await hmac(body);
@@ -91,8 +104,9 @@ export const PUBLIC_PREFIXES = [
   "/assess/",
   "/api/auth/",
   "/api/track",
-  "/api/outcomes",
+  "/api/prospect/",
   "/api/assessments",
+  "/api/health",
   "/api/webhooks/",
   "/api/thumb/",
   "/api/agents/tick",

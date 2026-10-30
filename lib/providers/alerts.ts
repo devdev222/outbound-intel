@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { config } from "@/lib/config";
 import type { HotLeadAlert } from "@/lib/types";
 import { httpJson } from "./http";
@@ -88,6 +89,8 @@ function buildBlocks(a: HotLeadAlert) {
   ];
 }
 
+const SlackPostResponse = z.object({ ok: z.boolean(), ts: z.string().optional(), error: z.string().optional() });
+
 export class SlackAlertProvider implements AlertProvider {
   readonly name = "slack";
 
@@ -105,7 +108,9 @@ export class SlackAlertProvider implements AlertProvider {
         headers: { authorization: `Bearer ${config.slack.botToken}`, "content-type": "application/json; charset=utf-8" },
         body: { channel: config.slack.channel, text, blocks },
       });
-      return { delivered: data.ok, via: "slack:chat.postMessage", note: data.ok ? data.ts : data.error };
+      const parsed = SlackPostResponse.safeParse(data);
+      if (!parsed.success) return { delivered: false, via: "slack:chat.postMessage", note: "unexpected response shape from Slack" };
+      return { delivered: parsed.data.ok, via: "slack:chat.postMessage", note: parsed.data.ok ? parsed.data.ts : parsed.data.error, remoteId: parsed.data.ts };
     }
     return { delivered: false, via: "slack", note: "SLACK_WEBHOOK_URL or SLACK_BOT_TOKEN+SLACK_CHANNEL not set" };
   }

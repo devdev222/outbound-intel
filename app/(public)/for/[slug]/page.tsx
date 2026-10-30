@@ -128,7 +128,7 @@ export default async function PersonalizedPage({ params }: Params) {
 
           {/* 5. One ask */}
           <Closing id="talk" preparedFor={record.company_name}>
-            <BookingCTA slug={account.slug} repName={record.rep_name} bookingHref={schedulerHref} contactName={account.contact?.name} contactEmail={account.contact?.email} />
+            <BookingCTA slug={account.slug} token={token} repName={record.rep_name} bookingHref={schedulerHref} contactName={account.contact?.name} contactEmail={account.contact?.email} />
           </Closing>
         </CalcStateProvider>
       </main>

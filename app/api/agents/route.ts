@@ -1,3 +1,4 @@
+import { requireApiRole } from "@/lib/auth";
 import { AGENTS } from "@/lib/agents";
 import { isAgentRunning, loopStatus } from "@/lib/agents/runtime";
 import { json, pipelineSummary } from "@/lib/api";
@@ -9,6 +10,8 @@ export const dynamic = "force-dynamic";
 
 /** Team status for the Agents page (polled). */
 export async function GET() {
+  const auth = await requireApiRole(["admin"]);
+  if ("response" in auth) return auth.response;
   const store = getStore();
   const [states, recentRuns, summary] = await Promise.all([store.getAgentStates(), store.listAgentRuns({ limit: 50 }), pipelineSummary(store)]);
   return json({

@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { EXPECTED_SCHEMA_VERSION, normalizeTaskStatus } from "./schema";
 import type {
   Account,
   ActivityEntry,
@@ -10,11 +11,12 @@ import type {
   CallQueueItem,
   EngagementEvent,
   HistoricalRecord,
+  Operation,
   Outcome,
   OutreachTouch,
   ScoringModel,
 } from "@/lib/types";
-import type { Store } from "./types";
+import type { OperationPatch, Store } from "./types";
 
 export type Collection =
   | "accounts"
@@ -28,6 +30,7 @@ export type Collection =
   | "activity"
   | "agent_runs"
   | "agent_state"
+  | "operations"
   | `docs_${string}`;
 
 /**
@@ -127,6 +130,15 @@ export class FileStore implements Store {
     }));
   }
 
+  upsertHistorical(record: HistoricalRecord): Promise<void> {
+    return this.mutate<HistoricalRecord, void>("historical", (rows) => {
+      const idx = rows.findIndex((r) => r.id === record.id);
+      if (idx >= 0) rows[idx] = record;
+      else rows.push(record);
+      return { rows, result: undefined };
+    });
+  }
+
   replaceHistorical(records: HistoricalRecord[]): Promise<void> {
     return this.mutate<HistoricalRecord, void>("historical", () => ({ rows: records, result: undefined }));
   }
@@ -185,8 +197,11 @@ export class FileStore implements Store {
   // Alerts / calls -----------------------------------------------------------
 
   insertAlert(alert: Alert): Promise<Alert> {
+    // Upsert by id: Jerry re-saves an alert as per-destination deliveries progress.
     return this.mutate<Alert, Alert>("alerts", (rows) => {
-      rows.push(alert);
+      const idx = rows.findIndex((r) => r.id === alert.id);
+      if (idx >= 0) rows[idx] = alert;
+      else rows.push(alert);
       return { rows, result: alert };
     });
   }
@@ -239,13 +254,17 @@ export class FileStore implements Store {
   }
 
   async getOutreach(id: string): Promise<OutreachTouch | null> {
-    return (await this.read<OutreachTouch>("outreach")).find((t) => t.id === id) ?? null;
+    const t = (await this.read<OutreachTouch>("outreach")).find((x) => x.id === id);
+    return t ? normalizeTaskStatus(t) : null;
   }
 
-  async listOutreach(opts: { accountId?: string; status?: OutreachTouch["status"]; dueBefore?: string; limit?: number } = {}): Promise<OutreachTouch[]> {
-    let rows = await this.read<OutreachTouch>("outreach");
+  async listOutreach(opts: { accountId?: string; status?: OutreachTouch["status"] | OutreachTouch["status"][]; dueBefore?: string; limit?: number } = {}): Promise<OutreachTouch[]> {
+    let rows = (await this.read<OutreachTouch>("outreach")).map(normalizeTaskStatus);
     if (opts.accountId) rows = rows.filter((t) => t.accountId === opts.accountId);
-    if (opts.status) rows = rows.filter((t) => t.status === opts.status);
+    if (opts.status) {
+      const wanted = Array.isArray(opts.status) ? opts.status : [opts.status];
+      rows = rows.filter((t) => wanted.includes(t.status));
+    }
     if (opts.dueBefore) rows = rows.filter((t) => t.scheduledFor <= opts.dueBefore!);
     rows.sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
     return opts.limit ? rows.slice(0, opts.limit) : rows;
@@ -308,6 +327,68 @@ export class FileStore implements Store {
     });
   }
 
+  // Operations ------------------------------------------------------------------
+  // All mutations go through the single promise chain, so a claim is atomic within
+  // this process. Multi-process deployments must use the Supabase store.
+
+  ensureOperation(op: Operation): Promise<Operation> {
+    return this.mutate<Operation, Operation>("operations", (rows) => {
+      const existing = rows.find((r) => r.id === op.id);
+      if (existing) return { rows, result: existing };
+      rows.push(op);
+      return { rows, result: op };
+    });
+  }
+
+  async getOperation(id: string): Promise<Operation | null> {
+    return (await this.read<Operation>("operations")).find((o) => o.id === id) ?? null;
+  }
+
+  claimOperation(id: string, owner: string, leaseMs: number): Promise<Operation | null> {
+    return this.mutate<Operation, Operation | null>("operations", (rows) => {
+      const op = rows.find((r) => r.id === id);
+      const now = new Date().toISOString();
+      if (!op) return { rows, result: null };
+      const due = !op.nextAttemptAt || op.nextAttemptAt <= now;
+      const claimable = ((op.status === "pending" || op.status === "failed") && due) || (op.status === "running" && (!op.leaseUntil || op.leaseUntil < now));
+      if (!claimable) return { rows, result: null };
+      op.status = "running";
+      op.leaseOwner = owner;
+      op.leaseUntil = new Date(Date.now() + leaseMs).toISOString();
+      op.updatedAt = now;
+      return { rows, result: { ...op } };
+    });
+  }
+
+  finishOperation(id: string, owner: string, patch: OperationPatch): Promise<Operation | null> {
+    return this.mutate<Operation, Operation | null>("operations", (rows) => {
+      const op = rows.find((r) => r.id === id);
+      if (!op || op.leaseOwner !== owner) return { rows, result: null };
+      Object.assign(op, patch, { updatedAt: new Date().toISOString() });
+      return { rows, result: { ...op } };
+    });
+  }
+
+  requeueOperation(id: string): Promise<Operation | null> {
+    return this.mutate<Operation, Operation | null>("operations", (rows) => {
+      const op = rows.find((r) => r.id === id);
+      const now = new Date().toISOString();
+      if (!op) return { rows, result: null };
+      if (op.status === "running" && op.leaseUntil && op.leaseUntil > now) return { rows, result: { ...op } };
+      Object.assign(op, { status: "pending", attempts: 0, nextAttemptAt: null, lastError: null, leaseOwner: null, leaseUntil: null, updatedAt: now });
+      return { rows, result: { ...op } };
+    });
+  }
+
+  async listOperations(opts: { accountId?: string; status?: Operation["status"]; kind?: Operation["kind"]; limit?: number } = {}): Promise<Operation[]> {
+    let rows = await this.read<Operation>("operations");
+    if (opts.accountId) rows = rows.filter((o) => o.accountId === opts.accountId);
+    if (opts.status) rows = rows.filter((o) => o.status === opts.status);
+    if (opts.kind) rows = rows.filter((o) => o.kind === opts.kind);
+    rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return opts.limit ? rows.slice(0, opts.limit) : rows;
+  }
+
   // Generic documents ---------------------------------------------------------
 
   async getDoc<T>(collection: string, id: string): Promise<T | null> {
@@ -333,6 +414,10 @@ export class FileStore implements Store {
 
   // Reset --------------------------------------------------------------------
 
+  async schemaVersion(): Promise<string | null> {
+    return EXPECTED_SCHEMA_VERSION;
+  }
+
   async reset(): Promise<void> {
     try {
       const files = await fs.readdir(this.dir);
@@ -352,6 +437,7 @@ export class FileStore implements Store {
       "activity",
       "agent_runs",
       "agent_state",
+      "operations",
     ];
     for (const c of all) await this.mutate<unknown, void>(c, () => ({ rows: [], result: undefined }));
   }

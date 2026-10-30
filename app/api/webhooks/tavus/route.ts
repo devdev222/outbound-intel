@@ -1,4 +1,4 @@
-import { error, json, safeEqual } from "@/lib/api";
+import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
 import { logActivity } from "@/lib/engine/activity";
 import { tavusToRecord } from "@/lib/providers/video";
@@ -15,6 +15,8 @@ export const dynamic = "force-dynamic";
  * Docs: https://docs.tavus.io/sections/webhooks-and-callbacks.md
  */
 export async function POST(req: Request) {
+  const blocked = callbackSecretMissing(config.tavus.webhookSecret, "TAVUS_WEBHOOK_SECRET");
+  if (blocked) return blocked;
   if (config.tavus.webhookSecret) {
     const token = new URL(req.url).searchParams.get("token") ?? "";
     if (!safeEqual(token, config.tavus.webhookSecret)) return error("unauthorized", 401);

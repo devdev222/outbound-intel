@@ -121,12 +121,12 @@ server.registerTool(
   "list_rep_tasks",
   {
     title: "List rep tasks",
-    description: "Outreach touches waiting on a human (LinkedIn messages, InMail, gifts, manual emails, estimate requests), newest first.",
+    description: "Tasks waiting on a person: drafts awaiting approval, manual LinkedIn/InMail/gift/call tasks, failed deliveries, newest first.",
     inputSchema: { limit: z.number().int().min(1).max(100).default(25) },
   },
   async ({ limit }) => {
     const store = getStore();
-    const tasks = await store.listOutreach({ status: "awaiting_rep", limit });
+    const tasks = await store.listOutreach({ status: ["awaiting_approval", "manual", "failed"], limit });
     const accounts = new Map((await store.listAccounts()).map((a) => [a.id, a]));
     return text(
       tasks.map((t) => ({
@@ -134,6 +134,8 @@ server.registerTool(
         company: accounts.get(t.accountId)?.companyName,
         slug: accounts.get(t.accountId)?.slug,
         channel: t.channel,
+        status: t.status,
+        title: t.title,
         step: t.step,
         subject: t.subject,
         body: t.body,
@@ -147,15 +149,20 @@ server.registerTool(
 server.registerTool(
   "complete_rep_task",
   {
-    title: "Complete a rep task",
-    description: "Mark a rep task as sent (records the send as engagement) or skipped.",
-    inputSchema: { id: z.string(), status: z.enum(["sent", "skipped"]) },
+    title: "Act on a task",
+    description: "approve (Review & approve; schedules, never sends), complete_manual (record it was sent/done outside the platform), or skip.",
+    inputSchema: { id: z.string(), action: z.enum(["approve", "complete_manual", "skip"]), note: z.string().max(500).optional() },
   },
-  async ({ id, status }) => {
-    const { completeRepTask } = await import("@/lib/engine/outreach");
-    const touch = await completeRepTask(getStore(), id, status, "mcp");
-    if (!touch) return { content: [{ type: "text", text: `No task with id ${id}` }], isError: true };
-    return text({ id: touch.id, status: touch.status, channel: touch.channel, step: touch.step });
+  async ({ id, action, note }) => {
+    const tasks = await import("@/lib/engine/tasks");
+    const user = { id: "u_mcp", email: "mcp@localhost", name: "MCP client", role: "admin" as const };
+    try {
+      const touch =
+        action === "approve" ? await tasks.approveTask(getStore(), getProviders(), id, user) : action === "complete_manual" ? await tasks.completeManually(getStore(), id, user, note) : await tasks.skipTask(getStore(), id, user, note);
+      return text({ id: touch.id, status: touch.status, channel: touch.channel, step: touch.step });
+    } catch (err) {
+      return { content: [{ type: "text", text: (err as Error).message }], isError: true };
+    }
   },
 );
 

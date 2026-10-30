@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { config } from "@/lib/config";
 import type { EnrichmentResult } from "@/lib/providers";
 import type { Account, Person } from "@/lib/types";
@@ -5,108 +6,237 @@ import type { Account, Person } from "@/lib/types";
 /**
  * Remote Jerry over MCP. When Cartage's Jerry already runs as a service that
  * speaks the Model Context Protocol, set JERRY_MODE=mcp and either
- * JERRY_MCP_URL (Streamable HTTP) or JERRY_MCP_COMMAND (stdio). This client
- * calls two tools on it; the names and argument shapes below are the contract
- * we propose and can be renamed to match the real server.
+ * JERRY_MCP_URL (Streamable HTTP) or JERRY_MCP_COMMAND + JERRY_MCP_ARGS (stdio).
+ * Two tools are called; rename them here if Jerry exposes different names.
  *
  *   enrich_contact { name, title, email?, linkedin?, company, domain }
- *     -> { phone?, phone_verified?, linkedin?, email?, recent_news?: string[], tech_stack?: string[], notes?: string[] }
+ *     -> { phone?, phone_verified?: boolean, linkedin?, email?, recent_news?: string[], tech_stack?: string[], notes?: string[] }
  *   talk_track { company, contact, signals: string[], engagement: string[], pain_hypothesis?, angle? }
- *     -> { talk_track, action, notes?: string[] }
+ *     -> { talk_track, action?, notes?: string[] }
+ *
+ * Resilience: a failed connection is not cached forever. The client retries
+ * with exponential backoff (5s .. 5min), drops the session on transport errors,
+ * verifies at connect time that both tools exist, and validates every response
+ * against a schema (a string "false" never verifies a phone).
  *
  * Uses @modelcontextprotocol/sdk (v1.x): Client + StreamableHTTPClientTransport / StdioClientTransport.
- * Docs: https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/README.md
  */
 
+const TOOL_ENRICH = "enrich_contact";
+const TOOL_TALK = "talk_track";
+
+type McpClient = import("@modelcontextprotocol/sdk/client/index.js").Client;
 type ToolResult = { content?: Array<{ type: string; text?: string }>; structuredContent?: unknown; isError?: boolean };
 
-class JerryMcpClient {
-  private clientPromise: Promise<import("@modelcontextprotocol/sdk/client/index.js").Client | null> | null = null;
+const EnrichSchema = z.object({
+  phone: z.string().min(3).nullish(),
+  phone_verified: z.boolean().nullish(),
+  linkedin: z.string().nullish(),
+  email: z.string().email().nullish(),
+  recent_news: z.array(z.string()).nullish(),
+  tech_stack: z.array(z.string()).nullish(),
+  notes: z.array(z.string()).nullish(),
+});
 
-  private async connect() {
-    if (this.clientPromise) return this.clientPromise;
-    this.clientPromise = (async () => {
-      if (config.jerry.mode !== "mcp") return null;
-      try {
-        const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-        const client = new Client({ name: "outbound-intel", version: "0.1.0" });
-        if (config.jerry.mcpUrl) {
-          const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
-          const transport = new StreamableHTTPClientTransport(new URL(config.jerry.mcpUrl), {
-            requestInit: config.jerry.mcpToken ? { headers: { authorization: `Bearer ${config.jerry.mcpToken}` } } : undefined,
-          });
-          await client.connect(transport);
-        } else if (config.jerry.mcpCommand) {
-          const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
-          const [command, ...args] = config.jerry.mcpCommand.split(/\s+/);
-          await client.connect(new StdioClientTransport({ command, args }));
-        } else {
-          return null;
-        }
-        return client;
-      } catch (err) {
-        console.warn(`[jerry-mcp] connect failed: ${(err as Error).message}`);
-        return null;
-      }
-    })();
-    return this.clientPromise;
+const TalkSchema = z.object({
+  talk_track: z.string().min(1),
+  action: z.string().nullish(),
+  notes: z.array(z.string()).nullish(),
+});
+
+export function parseMcpArgs(raw: string, commandLine: string): { command: string; args: string[] } {
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) return { command: commandLine.trim(), args: parsed };
+    } catch {
+      /* fall through to whitespace split */
+    }
+    return { command: commandLine.trim(), args: raw.split(/\s+/).filter(Boolean) };
+  }
+  // Legacy: everything in JERRY_MCP_COMMAND.
+  const [command, ...args] = commandLine.trim().split(/\s+/);
+  return { command, args };
+}
+
+export interface JerryMcpStatus {
+  configured: boolean;
+  connected: boolean;
+  transport: "http" | "stdio" | null;
+  lastError: string | null;
+  lastSuccessAt: string | null;
+  nextRetryAt: string | null;
+  tools: string[];
+}
+
+class JerryMcpClient {
+  private client: McpClient | null = null;
+  private connecting: Promise<McpClient | null> | null = null;
+  private failures = 0;
+  private nextRetryAt = 0;
+  private lastError: string | null = null;
+  private lastSuccessAt: string | null = null;
+  private tools: string[] = [];
+
+  status(): JerryMcpStatus {
+    return {
+      configured: config.jerry.mode === "mcp" && Boolean(config.jerry.mcpUrl || config.jerry.mcpCommand),
+      connected: Boolean(this.client),
+      transport: config.jerry.mcpUrl ? "http" : config.jerry.mcpCommand ? "stdio" : null,
+      lastError: this.lastError,
+      lastSuccessAt: this.lastSuccessAt,
+      nextRetryAt: this.nextRetryAt ? new Date(this.nextRetryAt).toISOString() : null,
+      tools: this.tools,
+    };
   }
 
-  private async call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null> {
-    const client = await this.connect();
-    if (!client) return null;
+  private fail(message: string): never {
+    this.lastError = message;
+    throw new Error(message);
+  }
+
+  private async drop(): Promise<void> {
+    const c = this.client;
+    this.client = null;
     try {
-      const res = (await client.callTool({ name, arguments: args })) as ToolResult;
-      if (res.isError) return null;
-      if (res.structuredContent && typeof res.structuredContent === "object") return res.structuredContent as Record<string, unknown>;
-      const text = res.content?.find((c) => c.type === "text")?.text;
-      return text ? (JSON.parse(text) as Record<string, unknown>) : null;
+      await c?.close();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private async connect(): Promise<McpClient> {
+    if (this.client) return this.client;
+    if (config.jerry.mode !== "mcp") this.fail("JERRY_MODE is not mcp");
+    if (!config.jerry.mcpUrl && !config.jerry.mcpCommand) this.fail("JERRY_MCP_URL or JERRY_MCP_COMMAND is not set");
+    if (Date.now() < this.nextRetryAt) this.fail(`Jerry MCP unavailable (${this.lastError ?? "connection failed"}); next retry ${new Date(this.nextRetryAt).toISOString()}`);
+    if (!this.connecting) {
+      this.connecting = (async () => {
+        try {
+          const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+          const client = new Client({ name: "outbound-intel", version: "0.2.0" });
+          if (config.jerry.mcpUrl) {
+            const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+            await client.connect(
+              new StreamableHTTPClientTransport(new URL(config.jerry.mcpUrl), {
+                requestInit: config.jerry.mcpToken ? { headers: { authorization: `Bearer ${config.jerry.mcpToken}` } } : undefined,
+              }),
+            );
+          } else {
+            const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+            const { command, args } = parseMcpArgs(config.jerry.mcpArgs, config.jerry.mcpCommand);
+            await client.connect(new StdioClientTransport({ command, args }));
+          }
+          // Validate the tool mapping once per connection.
+          const listed = await client.listTools();
+          this.tools = listed.tools.map((t) => t.name);
+          const missing = [TOOL_ENRICH, TOOL_TALK].filter((t) => !this.tools.includes(t));
+          if (missing.length) {
+            await client.close().catch(() => undefined);
+            throw new Error(`Jerry MCP server does not expose: ${missing.join(", ")} (has: ${this.tools.join(", ") || "none"})`);
+          }
+          this.client = client;
+          this.failures = 0;
+          this.nextRetryAt = 0;
+          return client;
+        } catch (err) {
+          this.failures++;
+          this.nextRetryAt = Date.now() + Math.min(5 * 60_000, 5_000 * 2 ** (this.failures - 1));
+          this.lastError = (err as Error).message;
+          return null;
+        } finally {
+          this.connecting = null;
+        }
+      })();
+    }
+    const c = await this.connecting;
+    if (!c) this.fail(`Jerry MCP connection failed: ${this.lastError}`);
+    return c;
+  }
+
+  private async call(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const client = await this.connect();
+    let res: ToolResult;
+    try {
+      res = (await client.callTool({ name, arguments: args })) as ToolResult;
     } catch (err) {
-      console.warn(`[jerry-mcp] ${name} failed: ${(err as Error).message}`);
+      // Transport-level failure: drop the session so the next call reconnects.
+      await this.drop();
+      this.failures++;
+      this.nextRetryAt = Date.now() + Math.min(5 * 60_000, 5_000 * 2 ** (this.failures - 1));
+      this.fail(`Jerry MCP ${name} failed: ${(err as Error).message}`);
+    }
+    if (res.isError) this.fail(`Jerry MCP ${name} returned an error: ${res.content?.find((c) => c.type === "text")?.text ?? "unknown"}`);
+    if (res.structuredContent && typeof res.structuredContent === "object") return res.structuredContent;
+    const text = res.content?.find((c) => c.type === "text")?.text;
+    if (!text) this.fail(`Jerry MCP ${name} returned no content`);
+    try {
+      return JSON.parse(text);
+    } catch {
+      this.fail(`Jerry MCP ${name} returned non-JSON text`);
+    }
+  }
+
+  /** Throws on any failure; callers record it as a visible enrichment blocker. */
+  async enrichContactOrThrow(person: Person, account: Account): Promise<EnrichmentResult> {
+    const raw = await this.call(TOOL_ENRICH, { name: person.name, title: person.title, email: person.email, linkedin: person.linkedin, company: account.companyName, domain: account.domain });
+    const parsed = EnrichSchema.safeParse(raw);
+    if (!parsed.success) this.fail(`Jerry MCP ${TOOL_ENRICH} returned an unexpected shape: ${parsed.error.issues.map((i) => i.path.join(".")).join(", ")}`);
+    const r = parsed.data;
+    const phoneVerified = r.phone_verified === true && Boolean(r.phone ?? person.phone);
+    this.lastSuccessAt = new Date().toISOString();
+    this.lastError = null;
+    return {
+      contact: { ...person, phone: r.phone ?? person.phone, phoneVerified, linkedin: r.linkedin ?? person.linkedin, email: r.email ?? person.email, verifiedBy: "jerry-mcp" },
+      phoneVerified,
+      linkedinMatched: Boolean(r.linkedin ?? person.linkedin),
+      recentNews: r.recent_news ?? [],
+      techStack: r.tech_stack ?? [],
+      notes: r.notes ?? [],
+      complete: true,
+      provider: "jerry-mcp",
+      provenance: "provider",
+    };
+  }
+
+  /** Talk track is optional polish: returns null on failure and the local template is used. */
+  async talkTrack(account: Account, contact: Person | null, engagement: string[], signals: string[]): Promise<{ talkTrack: string; action: string; notes: string[] } | null> {
+    try {
+      const raw = await this.call(TOOL_TALK, {
+        company: account.companyName,
+        contact: contact ? { name: contact.name, title: contact.title } : null,
+        signals,
+        engagement,
+        pain_hypothesis: account.painHypothesis,
+        angle: account.messagingAngle ?? account.campaign?.angle,
+      });
+      const parsed = TalkSchema.safeParse(raw);
+      if (!parsed.success) return null;
+      this.lastSuccessAt = new Date().toISOString();
+      return { talkTrack: parsed.data.talk_track, action: parsed.data.action ?? "Call now", notes: parsed.data.notes ?? [] };
+    } catch (err) {
+      console.warn(`[jerry-mcp] ${(err as Error).message}`);
       return null;
     }
   }
 
-  async enrichContact(person: Person, account: Account): Promise<EnrichmentResult | null> {
-    const r = await this.call("enrich_contact", {
-      name: person.name,
-      title: person.title,
-      email: person.email,
-      linkedin: person.linkedin,
-      company: account.companyName,
-      domain: account.domain,
-    });
-    if (!r) return null;
-    return {
-      contact: {
-        ...person,
-        phone: (r.phone as string) ?? person.phone,
-        phoneVerified: Boolean(r.phone_verified),
-        linkedin: (r.linkedin as string) ?? person.linkedin,
-        email: (r.email as string) ?? person.email,
-      },
-      phoneVerified: Boolean(r.phone_verified),
-      linkedinMatched: Boolean(r.linkedin ?? person.linkedin),
-      recentNews: (r.recent_news as string[]) ?? [],
-      techStack: (r.tech_stack as string[]) ?? [],
-      notes: (r.notes as string[]) ?? [],
-      complete: true,
-      provider: "jerry-mcp",
-    };
-  }
-
-  async talkTrack(account: Account, contact: Person | null, engagement: string[], signals: string[]): Promise<{ talkTrack: string; action: string; notes: string[] } | null> {
-    const r = await this.call("talk_track", {
-      company: account.companyName,
-      contact: contact ? { name: contact.name, title: contact.title } : null,
-      signals,
-      engagement,
-      pain_hypothesis: account.painHypothesis,
-      angle: account.messagingAngle ?? account.campaign?.angle,
-    });
-    if (!r || typeof r.talk_track !== "string") return null;
-    return { talkTrack: r.talk_track, action: (r.action as string) ?? "Call now", notes: (r.notes as string[]) ?? [] };
+  /** Connection test for the Integrations page. */
+  async test(): Promise<{ ok: boolean; message: string }> {
+    try {
+      await this.drop();
+      this.nextRetryAt = 0;
+      await this.connect();
+      this.lastSuccessAt = new Date().toISOString();
+      return { ok: true, message: `Connected over ${config.jerry.mcpUrl ? "HTTP" : "stdio"}; tools: ${this.tools.join(", ")}` };
+    } catch (err) {
+      return { ok: false, message: (err as Error).message };
+    }
   }
 }
 
-export const jerryMcp = new JerryMcpClient();
+declare global {
+  // eslint-disable-next-line no-var
+  var __outboundIntelJerryMcp: JerryMcpClient | undefined;
+}
+
+export const jerryMcp: JerryMcpClient = globalThis.__outboundIntelJerryMcp ?? (globalThis.__outboundIntelJerryMcp = new JerryMcpClient());

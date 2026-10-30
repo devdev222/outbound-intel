@@ -9,11 +9,12 @@ import type {
   CallQueueItem,
   EngagementEvent,
   HistoricalRecord,
+  Operation,
   Outcome,
   OutreachTouch,
   ScoringModel,
 } from "@/lib/types";
-import type { Store } from "./types";
+import type { OperationPatch, Store } from "./types";
 
 /**
  * Supabase (Postgres) store. Schema: supabase/migrations/0001_init.sql.
@@ -38,6 +39,27 @@ export class SupabaseStore implements Store {
 
   private fail(context: string, error: { message: string } | null): never {
     throw new Error(`[supabase] ${context}: ${error?.message ?? "unknown error"}`);
+  }
+
+  /**
+   * Exhaustive read with pagination (PostgREST caps a response at ~1000 rows).
+   * `make` must build a fresh query each call; `limit` stops early.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async pageAll(make: () => any, context: string, limit?: number): Promise<Record<string, any>[]> {
+    const pageSize = 1000;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out: Record<string, any>[] = [];
+    for (let from = 0; ; from += pageSize) {
+      const to = limit ? Math.min(from + pageSize, limit) - 1 : from + pageSize - 1;
+      if (to < from) break;
+      const { data, error } = await make().range(from, to);
+      if (error) this.fail(context, error);
+      const rows = data ?? [];
+      out.push(...rows);
+      if (rows.length < to - from + 1 || (limit && out.length >= limit)) break;
+    }
+    return out;
   }
 
   // Row mappers ---------------------------------------------------------------
@@ -77,7 +99,17 @@ export class SupabaseStore implements Store {
       model_version: a.modelVersion,
       last_alert_at: a.lastAlertAt,
       pending_activation: a.pendingActivation,
+      pending_activation_at: a.pendingActivationAt ?? null,
+      paused_until: a.pausedUntil ?? null,
+      pause_reason: a.pauseReason ?? null,
+      enrichment: a.enrichment ?? null,
       agent_runs: a.agentRuns,
+      owner_rep_id: a.ownerRepId ?? null,
+      readiness: a.readiness ?? null,
+      next_action: a.nextAction ?? null,
+      experiments: a.experiments ?? {},
+      pipeline_value: a.pipelineValue ?? null,
+      crm_owner: a.crmOwner ?? null,
       created_at: a.createdAt,
       updated_at: new Date().toISOString(),
     };
@@ -123,7 +155,17 @@ export class SupabaseStore implements Store {
       modelVersion: (r.model_version as number) ?? null,
       lastAlertAt: (r.last_alert_at as string) ?? null,
       pendingActivation: (r.pending_activation as string) ?? null,
+      pendingActivationAt: (r.pending_activation_at as string) ?? null,
+      pausedUntil: (r.paused_until as string) ?? null,
+      pauseReason: (r.pause_reason as string) ?? null,
+      enrichment: (r.enrichment as Account["enrichment"]) ?? null,
       agentRuns: (r.agent_runs as Record<string, string>) ?? {},
+      ownerRepId: (r.owner_rep_id as string) ?? null,
+      readiness: (r.readiness as Account["readiness"]) ?? null,
+      nextAction: (r.next_action as Account["nextAction"]) ?? null,
+      experiments: (r.experiments as Record<string, string>) ?? {},
+      pipelineValue: r.pipeline_value === null || r.pipeline_value === undefined ? null : Number(r.pipeline_value),
+      crmOwner: (r.crm_owner as string) ?? null,
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
     };
@@ -198,9 +240,8 @@ export class SupabaseStore implements Store {
   // Accounts -----------------------------------------------------------------
 
   async listAccounts(): Promise<Account[]> {
-    const { data, error } = await this.db.from("accounts").select("*").order("priority", { ascending: false });
-    if (error) this.fail("listAccounts", error);
-    return (data ?? []).map((r) => this.rowToAccount(r));
+    const rows = await this.pageAll(() => this.db.from("accounts").select("*").order("priority", { ascending: false }).order("id"), "listAccounts");
+    return rows.map((r) => this.rowToAccount(r));
   }
 
   async getAccountById(id: string): Promise<Account | null> {
@@ -240,9 +281,13 @@ export class SupabaseStore implements Store {
   // Historical ---------------------------------------------------------------
 
   async listHistorical(): Promise<HistoricalRecord[]> {
-    const { data, error } = await this.db.from("historical_accounts").select("*");
-    if (error) this.fail("listHistorical", error);
-    return (data ?? []).map((r) => this.rowToHistorical(r));
+    const rows = await this.pageAll(() => this.db.from("historical_accounts").select("*").order("id"), "listHistorical");
+    return rows.map((r) => this.rowToHistorical(r));
+  }
+
+  async upsertHistorical(record: HistoricalRecord): Promise<void> {
+    const { error } = await this.db.from("historical_accounts").upsert(this.historicalToRow(record), { onConflict: "id" });
+    if (error) this.fail("upsertHistorical", error);
   }
 
   async insertHistorical(records: HistoricalRecord[]): Promise<void> {
@@ -277,13 +322,13 @@ export class SupabaseStore implements Store {
   }
 
   async listEvents(opts: { accountId?: string; limit?: number; sinceIso?: string } = {}): Promise<EngagementEvent[]> {
-    let q = this.db.from("events").select("*").order("created_at", { ascending: false });
-    if (opts.accountId) q = q.eq("account_id", opts.accountId);
-    if (opts.sinceIso) q = q.gte("created_at", opts.sinceIso);
-    if (opts.limit) q = q.limit(opts.limit);
-    const { data, error } = await q;
-    if (error) this.fail("listEvents", error);
-    return (data ?? []).map((r) => ({
+    const data = await this.pageAll(() => {
+      let q = this.db.from("events").select("*").order("created_at", { ascending: false });
+      if (opts.accountId) q = q.eq("account_id", opts.accountId);
+      if (opts.sinceIso) q = q.gte("created_at", opts.sinceIso);
+      return q;
+    }, "listEvents", opts.limit);
+    return data.map((r) => ({
       id: r.id,
       accountId: r.account_id,
       eventType: r.event_type,
@@ -303,6 +348,7 @@ export class SupabaseStore implements Store {
       outcome_value: outcome.value,
       notes: outcome.notes,
       source: outcome.source,
+      opportunity_id: outcome.opportunityId ?? null,
       created_at: outcome.createdAt,
     });
     if (error) this.fail("insertOutcome", error);
@@ -310,18 +356,19 @@ export class SupabaseStore implements Store {
   }
 
   async listOutcomes(opts: { accountId?: string; limit?: number } = {}): Promise<Outcome[]> {
-    let q = this.db.from("outcomes").select("*").order("created_at", { ascending: false });
-    if (opts.accountId) q = q.eq("account_id", opts.accountId);
-    if (opts.limit) q = q.limit(opts.limit);
-    const { data, error } = await q;
-    if (error) this.fail("listOutcomes", error);
-    return (data ?? []).map((r) => ({
+    const data = await this.pageAll(() => {
+      let q = this.db.from("outcomes").select("*").order("created_at", { ascending: false });
+      if (opts.accountId) q = q.eq("account_id", opts.accountId);
+      return q;
+    }, "listOutcomes", opts.limit);
+    return data.map((r) => ({
       id: r.id,
       accountId: r.account_id,
       outcomeType: r.outcome_type,
-      value: r.outcome_value ?? null,
+      value: r.outcome_value === null || r.outcome_value === undefined ? null : Number(r.outcome_value),
       notes: r.notes ?? null,
       source: r.source ?? "api",
+      opportunityId: r.opportunity_id ?? null,
       createdAt: r.created_at,
     }));
   }
@@ -374,14 +421,19 @@ export class SupabaseStore implements Store {
   // Alerts / calls -----------------------------------------------------------
 
   async insertAlert(alert: Alert): Promise<Alert> {
-    const { error } = await this.db.from("alerts").insert({
-      id: alert.id,
-      account_id: alert.accountId,
-      kind: alert.kind,
-      payload: alert.payload,
-      delivered_via: alert.deliveredVia,
-      created_at: alert.createdAt,
-    });
+    // Upsert: Jerry re-saves an alert as per-destination deliveries succeed or are retried.
+    const { error } = await this.db.from("alerts").upsert(
+      {
+        id: alert.id,
+        account_id: alert.accountId,
+        kind: alert.kind,
+        payload: alert.payload,
+        delivered_via: alert.deliveredVia,
+        deliveries: alert.deliveries ?? [],
+        created_at: alert.createdAt,
+      },
+      { onConflict: "id" },
+    );
     if (error) this.fail("insertAlert", error);
     return alert;
   }
@@ -398,6 +450,7 @@ export class SupabaseStore implements Store {
       kind: r.kind,
       payload: r.payload,
       deliveredVia: r.delivered_via ?? [],
+      deliveries: r.deliveries ?? [],
       createdAt: r.created_at,
     }));
   }
@@ -461,6 +514,16 @@ export class SupabaseStore implements Store {
       externalId: (r.external_id as string) ?? undefined,
       note: (r.note as string) ?? undefined,
       taskUrl: (r.task_url as string) ?? undefined,
+      title: (r.title as string) ?? undefined,
+      source: (r.source as OutreachTouch["source"]) ?? undefined,
+      assigneeRepId: (r.assignee_rep_id as string) ?? null,
+      attempts: (r.attempts as number) ?? 0,
+      lastError: (r.last_error as string) ?? null,
+      approvedBy: (r.approved_by as string) ?? null,
+      approvedAt: (r.approved_at as string) ?? null,
+      completedBy: (r.completed_by as string) ?? null,
+      completionMode: (r.completion_mode as OutreachTouch["completionMode"]) ?? null,
+      conversationId: (r.conversation_id as string) ?? null,
     };
   }
 
@@ -479,6 +542,16 @@ export class SupabaseStore implements Store {
       external_id: t.externalId ?? null,
       note: t.note ?? null,
       task_url: t.taskUrl ?? null,
+      title: t.title ?? null,
+      source: t.source ?? null,
+      assignee_rep_id: t.assigneeRepId ?? null,
+      attempts: t.attempts ?? 0,
+      last_error: t.lastError ?? null,
+      approved_by: t.approvedBy ?? null,
+      approved_at: t.approvedAt ?? null,
+      completed_by: t.completedBy ?? null,
+      completion_mode: t.completionMode ?? null,
+      conversation_id: t.conversationId ?? null,
     };
   }
 
@@ -493,15 +566,125 @@ export class SupabaseStore implements Store {
     return data ? this.rowToTouch(data) : null;
   }
 
-  async listOutreach(opts: { accountId?: string; status?: OutreachTouch["status"]; dueBefore?: string; limit?: number } = {}): Promise<OutreachTouch[]> {
-    let q = this.db.from("outreach_touches").select("*").order("scheduled_for", { ascending: true });
-    if (opts.accountId) q = q.eq("account_id", opts.accountId);
-    if (opts.status) q = q.eq("status", opts.status);
-    if (opts.dueBefore) q = q.lte("scheduled_for", opts.dueBefore);
-    if (opts.limit) q = q.limit(opts.limit);
-    const { data, error } = await q;
-    if (error) this.fail("listOutreach", error);
-    return (data ?? []).map((r) => this.rowToTouch(r));
+  async listOutreach(opts: { accountId?: string; status?: OutreachTouch["status"] | OutreachTouch["status"][]; dueBefore?: string; limit?: number } = {}): Promise<OutreachTouch[]> {
+    const data = await this.pageAll(() => {
+      let q = this.db.from("outreach_touches").select("*").order("scheduled_for", { ascending: true }).order("id");
+      if (opts.accountId) q = q.eq("account_id", opts.accountId);
+      if (opts.status) q = Array.isArray(opts.status) ? q.in("status", opts.status) : q.eq("status", opts.status);
+      if (opts.dueBefore) q = q.lte("scheduled_for", opts.dueBefore);
+      return q;
+    }, "listOutreach", opts.limit);
+    return data.map((r) => this.rowToTouch(r));
+  }
+
+  // Operations ------------------------------------------------------------------
+  // A claim is one conditional UPDATE ... RETURNING. Postgres re-checks the WHERE
+  // clause under the row lock, so two workers never both win the same operation.
+
+  private opToRow(o: Operation) {
+    return {
+      id: o.id,
+      kind: o.kind,
+      account_id: o.accountId,
+      destination: o.destination,
+      status: o.status,
+      attempts: o.attempts,
+      max_attempts: o.maxAttempts,
+      lease_owner: o.leaseOwner,
+      lease_until: o.leaseUntil,
+      next_attempt_at: o.nextAttemptAt,
+      remote_id: o.remoteId,
+      last_error: o.lastError,
+      result: o.result,
+      created_at: o.createdAt,
+      updated_at: o.updatedAt,
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private rowToOp(r: Record<string, any>): Operation {
+    return {
+      id: r.id,
+      kind: r.kind,
+      accountId: r.account_id ?? null,
+      destination: r.destination,
+      status: r.status,
+      attempts: r.attempts ?? 0,
+      maxAttempts: r.max_attempts ?? 3,
+      leaseOwner: r.lease_owner ?? null,
+      leaseUntil: r.lease_until ?? null,
+      nextAttemptAt: r.next_attempt_at ?? null,
+      remoteId: r.remote_id ?? null,
+      lastError: r.last_error ?? null,
+      result: r.result ?? null,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  async ensureOperation(op: Operation): Promise<Operation> {
+    const { error } = await this.db.from("operations").upsert(this.opToRow(op), { onConflict: "id", ignoreDuplicates: true });
+    if (error) this.fail("ensureOperation", error);
+    const stored = await this.getOperation(op.id);
+    if (!stored) this.fail("ensureOperation:read", { message: "operation missing after insert" });
+    return stored;
+  }
+
+  async getOperation(id: string): Promise<Operation | null> {
+    const { data, error } = await this.db.from("operations").select("*").eq("id", id).maybeSingle();
+    if (error) this.fail("getOperation", error);
+    return data ? this.rowToOp(data) : null;
+  }
+
+  async claimOperation(id: string, owner: string, leaseMs: number): Promise<Operation | null> {
+    const now = new Date().toISOString();
+    const until = new Date(Date.now() + leaseMs).toISOString();
+    const { data, error } = await this.db
+      .from("operations")
+      .update({ status: "running", lease_owner: owner, lease_until: until, updated_at: now })
+      .eq("id", id)
+      .or(`and(status.in.(pending,failed),or(next_attempt_at.is.null,next_attempt_at.lte."${now}")),and(status.eq.running,lease_until.lt."${now}")`)
+      .select("*");
+    if (error) this.fail("claimOperation", error);
+    return data && data.length ? this.rowToOp(data[0]) : null;
+  }
+
+  async requeueOperation(id: string): Promise<Operation | null> {
+    const now = new Date().toISOString();
+    const { data, error } = await this.db
+      .from("operations")
+      .update({ status: "pending", attempts: 0, next_attempt_at: null, last_error: null, lease_owner: null, lease_until: null, updated_at: now })
+      .eq("id", id)
+      .or(`status.neq.running,lease_until.is.null,lease_until.lt."${now}"`)
+      .select("*");
+    if (error) this.fail("requeueOperation", error);
+    return data && data.length ? this.rowToOp(data[0]) : this.getOperation(id);
+  }
+
+  async finishOperation(id: string, owner: string, patch: OperationPatch): Promise<Operation | null> {
+    const row: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (patch.status !== undefined) row.status = patch.status;
+    if (patch.attempts !== undefined) row.attempts = patch.attempts;
+    if (patch.nextAttemptAt !== undefined) row.next_attempt_at = patch.nextAttemptAt;
+    if (patch.remoteId !== undefined) row.remote_id = patch.remoteId;
+    if (patch.lastError !== undefined) row.last_error = patch.lastError;
+    if (patch.result !== undefined) row.result = patch.result;
+    if (patch.leaseOwner !== undefined) row.lease_owner = patch.leaseOwner;
+    if (patch.leaseUntil !== undefined) row.lease_until = patch.leaseUntil;
+    const { data, error } = await this.db.from("operations").update(row).eq("id", id).eq("lease_owner", owner).select("*");
+    if (error) this.fail("finishOperation", error);
+    return data && data.length ? this.rowToOp(data[0]) : null;
+  }
+
+  async listOperations(opts: { accountId?: string; status?: Operation["status"]; kind?: Operation["kind"]; limit?: number } = {}): Promise<Operation[]> {
+    const data = await this.pageAll(() => {
+      let q = this.db.from("operations").select("*").order("updated_at", { ascending: false });
+      if (opts.accountId) q = q.eq("account_id", opts.accountId);
+      if (opts.status) q = q.eq("status", opts.status);
+      if (opts.kind) q = q.eq("kind", opts.kind);
+      return q;
+    }, "listOperations", opts.limit);
+    return data.map((r) => this.rowToOp(r));
   }
 
   // Activity -------------------------------------------------------------------
@@ -515,12 +698,12 @@ export class SupabaseStore implements Store {
   }
 
   async listActivity(opts: { accountId?: string; limit?: number } = {}): Promise<ActivityEntry[]> {
-    let q = this.db.from("account_activity").select("*").order("at", { ascending: false });
-    if (opts.accountId) q = q.eq("account_id", opts.accountId);
-    if (opts.limit) q = q.limit(opts.limit);
-    const { data, error } = await q;
-    if (error) this.fail("listActivity", error);
-    return (data ?? []).map((r) => ({
+    const data = await this.pageAll(() => {
+      let q = this.db.from("account_activity").select("*").order("at", { ascending: false });
+      if (opts.accountId) q = q.eq("account_id", opts.accountId);
+      return q;
+    }, "listActivity", opts.limit);
+    return data.map((r) => ({
       id: r.id,
       accountId: r.account_id,
       actor: r.actor,
@@ -611,6 +794,12 @@ export class SupabaseStore implements Store {
 
   // Generic documents (table "documents": collection text, id text, data jsonb) --------------
 
+  async schemaVersion(): Promise<string | null> {
+    const { data, error } = await this.db.from("app_meta").select("value").eq("key", "schema_version").maybeSingle();
+    if (error) return null;
+    return data ? String(data.value) : null;
+  }
+
   async getDoc<T>(collection: string, id: string): Promise<T | null> {
     const { data, error } = await this.db.from("documents").select("data").eq("collection", collection).eq("id", id).maybeSingle();
     if (error) this.fail("getDoc", error);
@@ -618,9 +807,8 @@ export class SupabaseStore implements Store {
   }
 
   async listDocs<T>(collection: string): Promise<T[]> {
-    const { data, error } = await this.db.from("documents").select("data").eq("collection", collection).order("updated_at", { ascending: false });
-    if (error) this.fail("listDocs", error);
-    return (data ?? []).map((r) => r.data as T);
+    const rows = await this.pageAll(() => this.db.from("documents").select("data").eq("collection", collection).order("updated_at", { ascending: false }).order("id"), "listDocs");
+    return rows.map((r) => r.data as T);
   }
 
   async putDoc<T extends { id: string }>(collection: string, doc: T): Promise<T> {
@@ -640,7 +828,7 @@ export class SupabaseStore implements Store {
     const { error: docs } = await this.db.from("documents").delete().neq("collection", "");
     if (docs) this.fail("reset:documents", docs);
     // Order matters because of foreign keys.
-    for (const table of ["account_activity", "outreach_touches", "call_queue", "alerts", "outcomes", "events", "agent_runs"]) {
+    for (const table of ["operations", "account_activity", "outreach_touches", "call_queue", "alerts", "outcomes", "events", "agent_runs"]) {
       const { error } = await this.db.from(table).delete().not("id", "is", null);
       if (error) this.fail(`reset:${table}`, error);
     }

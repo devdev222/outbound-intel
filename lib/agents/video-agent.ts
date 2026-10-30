@@ -1,8 +1,7 @@
 import { z } from "zod";
 import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
-import { angleFor, firstName, proofPoint, roiDefaultsFor, signalPhrase, topSignal } from "@/lib/engine/campaign";
-import { caseStudyById } from "@/lib/content/case-studies";
+import { angleFor, firstName, loadProofLine, type ProofLine, roiDefaultsFor, signalPhrase, topSignal } from "@/lib/engine/campaign";
 import { generateStructured, llmAvailable } from "@/lib/llm";
 import type { Account, Campaign, ScoringModel, VideoBeats } from "@/lib/types";
 import { type AgentContext, type AgentDefinition, mapLimit } from "./base";
@@ -29,7 +28,7 @@ const MAX_ATTEMPTS = 3;
 
 const BeatsSchema = z.object({
   hook: z.string().describe("1 sentence, says the first name, references the single strongest verified signal; no 'I hope this finds you well'"),
-  proof: z.string().describe("1 sentence with exactly one number from the case study or peer outcome provided"),
+  proof: z.string().describe("1 sentence citing the provided customer result verbatim; if none is provided, a sentence about the page's estimate with NO customer claim"),
   ask: z.string().describe("1 sentence: the page has their numbers, ask for fifteen minutes"),
   script: z.string().describe("The full spoken script = hook + one bridge sentence + proof + ask, 45-65 words, conversational, no bullet points"),
 });
@@ -42,21 +41,21 @@ export function estimateSeconds(script: string): number {
   return Math.round(wordCount(script) / WORDS_PER_SECOND);
 }
 
-export function templateBeats(account: Account, model: ScoringModel): VideoBeats & { script: string } {
+export function templateBeats(account: Account, model: ScoringModel, proofLine: ProofLine | null = null): VideoBeats & { script: string } {
   const sig = topSignal(account);
   const first = firstName(account);
   const roi = roiDefaultsFor(account);
   const hook = `Hi ${first}, this is ${config.brandName}. I noticed ${signalPhrase(sig, account)} at ${account.companyName}.`;
   const bridge = `Teams at your volume, around ${roi.shipmentsPerMonth.toLocaleString()} loads a month, usually hit a wall where every new shipment means another phone call.`;
-  const proof = proofPoint(account.industry);
+  // Only approved proof (or a labelled demo placeholder) is ever cited; otherwise no customer claim.
+  const proof = proofLine ? proofLine.sentence : "The page shows an estimate built from your own numbers.";
   const ask = "I put together a page with your numbers; the link is below. Worth fifteen minutes?";
   void angleFor(account, model, "A");
   return { hook, proof, ask, script: `${hook} ${bridge} ${proof} ${ask}` };
 }
 
-export function buildDossier(account: Account, model: ScoringModel): string {
+export function buildDossier(account: Account, model: ScoringModel, proofLine: ProofLine | null = null): string {
   const c = account.campaign;
-  const study = caseStudyById(c?.caseStudyId ?? "general-manufacturing-coordination");
   const verified = account.signals.filter((s) => s.status === "verified" && s.type !== "intent");
   const hyp = account.signals.filter((s) => s.status === "hypothesis");
   const patterns = new Map(model.signalPatterns.map((p) => [p.key, p]));
@@ -69,14 +68,15 @@ export function buildDossier(account: Account, model: ScoringModel): string {
     `Pain hypothesis: ${account.painHypothesis ?? "n/a"}`,
     `Messaging angle: ${c?.angle ?? account.messagingAngle ?? "n/a"}`,
     `ROI defaults: ${JSON.stringify(c?.roiDefaults ?? roiDefaultsFor(account))}`,
-    `Matched proof: "${study.title}" (${study.industry}): ${study.metrics.map((m) => `${m.value} ${m.label.toLowerCase()}`).join(", ")}; quote: "${study.quote}" (${study.quoteBy})`,
+    `Customer proof you may cite: ${proofLine ? `"${proofLine.title}": ${proofLine.value} ${proofLine.metric}` : "NONE - make no customer claim and use no customer numbers"}`,
     `Experiment arm: ${c ? `${c.arms.videoType} video, ${c.arms.personalization} personalization, angle ${c.arms.angleVariant}` : "n/a"}`,
     `Page: ${c?.pageUrl ?? "n/a"}`,
   ].join("\n");
 }
 
 export async function writeScript(account: Account, ctx: AgentContext): Promise<{ beats: VideoBeats; script: string; generatedBy: "llm" | "template" }> {
-  const template = templateBeats(account, ctx.model);
+  const proofLine = await loadProofLine(account);
+  const template = templateBeats(account, ctx.model, proofLine);
   const deep = account.campaign?.arms.personalization !== "conventional";
   if (!llmAvailable() || !deep) return { beats: { hook: template.hook, proof: template.proof, ask: template.ask }, script: template.script, generatedBy: "template" };
 
@@ -86,7 +86,7 @@ export async function writeScript(account: Account, ctx: AgentContext): Promise<
     system:
       `You are the Video Agent for ${config.brandName}, a managed transportation provider. You write 15-25 second personalized video scripts a sales rep (or their AI likeness) speaks to one prospect. ` +
       "Use only the dossier. Never state a hypothesis as fact. One number only. Warm, direct, no hype, no exclamation marks, no 'I hope you are well'. The script must read naturally out loud.",
-    user: `${buildDossier(account, ctx.model)}\n\nTemplate draft to beat (keep the facts): ${template.script}`,
+    user: `${buildDossier(account, ctx.model, proofLine)}\n\nTemplate draft to beat (keep the facts): ${template.script}`,
   });
   if (!r) return { beats: { hook: template.hook, proof: template.proof, ask: template.ask }, script: template.script, generatedBy: "template" };
   const words = wordCount(r.script);

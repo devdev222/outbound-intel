@@ -1,3 +1,4 @@
+import { requireApiRole } from "@/lib/auth";
 import { z } from "zod";
 import { runAgent, runAgentUntilDrained } from "@/lib/agents/runtime";
 import { json, readJson, requireAccount } from "@/lib/api";
@@ -17,6 +18,8 @@ const Body = z.object({
 
 /** Log a sales outcome. Terminal outcomes feed history; learning and re-scoring run in the background. */
 export async function POST(req: Request) {
+  const auth = await requireApiRole(["bdr", "exec", "admin"]);
+  if ("response" in auth) return auth.response;
   const body = await readJson(req, Body);
   if (!body.ok) return body.response;
   const store = getStore();
@@ -31,6 +34,8 @@ export async function POST(req: Request) {
 }
 
 export async function GET(req: Request) {
+  const auth = await requireApiRole(["bdr", "exec", "admin"]);
+  if ("response" in auth) return auth.response;
   const slug = new URL(req.url).searchParams.get("slug");
   const store = getStore();
   if (!slug) return json({ outcomes: await store.listOutcomes({ limit: 200 }) });

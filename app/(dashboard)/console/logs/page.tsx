@@ -12,7 +12,7 @@ export default async function LogsPage() {
   const [runs, failed, awaiting, activity, accounts] = await Promise.all([
     store.listAgentRuns({ limit: 200 }),
     store.listOutreach({ status: "failed", limit: 50 }),
-    store.listOutreach({ status: "awaiting_rep", limit: 200 }),
+    store.listOutreach({ status: ["awaiting_approval", "manual"], limit: 200 }),
     store.listActivity({ limit: 3000 }),
     store.listAccounts(),
   ]);

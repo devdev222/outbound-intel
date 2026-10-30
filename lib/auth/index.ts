@@ -3,13 +3,13 @@ import { redirect } from "next/navigation";
 import { auditLog } from "@/lib/store/collections";
 import type { Role, User } from "@/lib/types";
 import { nowIso, uuid } from "@/lib/util";
-import { SESSION_COOKIE, verifySession } from "./session";
+import { SESSION_COOKIE, authDisabled, verifySession } from "./session";
 
 export { SESSION_COOKIE, homeFor, canAccess } from "./session";
 
 /** Current user from the session cookie, or null. Server components and route handlers only. */
 export async function getSession(): Promise<User | null> {
-  if (process.env.AUTH_DISABLED === "true") return { id: "u_local", email: "local@localhost", name: "Local admin", role: "admin" };
+  if (authDisabled()) return { id: "u_local", email: "local@localhost", name: "Local admin", role: "admin" };
   const jar = await cookies();
   const payload = await verifySession(jar.get(SESSION_COOKIE)?.value);
   if (!payload) return null;

@@ -1,12 +1,15 @@
 import { z } from "zod";
-import { config } from "@/lib/config";
-import { caseStudyFor } from "@/lib/content/case-studies";
+import { allowPlaceholders, config } from "@/lib/config";
 import { generateStructured } from "@/lib/llm";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
-import type { Account, Campaign, ExperimentArms, OutreachTouch, RoiDefaults, ScoringModel, Signal } from "@/lib/types";
+import { proofStories } from "@/lib/store/collections";
+import type { Account, Campaign, ExperimentArms, OutreachTouch, ProofStory, RoiDefaults, ScoringModel, Signal } from "@/lib/types";
 import { hash32, nowIso, pageTokenFor, uuid } from "@/lib/util";
+import { logActivity } from "./activity";
 import { applyExperiments } from "./experiments";
+import { runOperation } from "./operations";
+import { ensureProofSeeded, rankProof } from "./proof";
 import { SIGNAL_BY_KEY, signalLabel } from "./signal-catalog";
 
 /** Canonical personalized page URL: /for/{slug}-{token}. The token is derived from the account id. */
@@ -108,11 +111,48 @@ export function signalPhrase(sig: Signal | null, account: Account): string {
   }
 }
 
-export function proofPoint(industry: string): string {
-  const study = caseStudyFor(industry);
-  const m = study.metrics[0];
-  const who = study.industry === "General" ? "A manufacturer at similar volume" : `A ${study.industry.toLowerCase()} customer`;
-  return `${who} got ${m.value} ${m.label.toLowerCase()} back with us.`;
+/**
+ * The one customer claim campaign content may make. Live mode: only an approved
+ * story's verified outcome. Demo mode may use a labelled placeholder story.
+ * When nothing qualifies the claim is omitted from every channel.
+ */
+export interface ProofLine {
+  storyId: string;
+  customer: string;
+  title: string;
+  metric: string;
+  value: string;
+  sentence: string;
+  placeholder: boolean;
+}
+
+export function proofLineFor(account: Account, stories: ProofStory[]): ProofLine | null {
+  for (const match of rankProof(account, stories, { allowPlaceholders: allowPlaceholders() })) {
+    const story = match.story;
+    const outcome = story.approved && !story.placeholder ? story.outcomes.find((o) => o.verified) : allowPlaceholders() && story.placeholder ? story.outcomes[0] : undefined;
+    if (!outcome) continue;
+    const who = story.industry === "General" ? "A manufacturer at similar volume" : `A ${story.industry.toLowerCase()} customer`;
+    return {
+      storyId: story.id,
+      customer: story.customer,
+      title: story.customer,
+      metric: outcome.metric,
+      value: outcome.value,
+      sentence: `${who} got ${outcome.value} ${outcome.metric.toLowerCase()} with us.`,
+      placeholder: story.placeholder,
+    };
+  }
+  return null;
+}
+
+export async function loadProofLine(account: Account): Promise<ProofLine | null> {
+  const stories = await ensureProofSeeded();
+  return proofLineFor(account, stories.length ? stories : await proofStories.list());
+}
+
+/** Back-compat for callers that only need the sentence. */
+export function proofPoint(proof: ProofLine | null): string {
+  return proof ? proof.sentence : "";
 }
 
 export interface CampaignCopy {
@@ -124,11 +164,10 @@ export interface CampaignCopy {
   generatedBy: "llm" | "template";
 }
 
-export function templateCopy(account: Account, model: ScoringModel, arms: ExperimentArms): CampaignCopy {
+export function templateCopy(account: Account, model: ScoringModel, arms: ExperimentArms, proof: ProofLine | null = null): CampaignCopy {
   const sig = topSignal(account);
   const angle = angleFor(account, model, arms.angleVariant);
   const roi = roiDefaultsFor(account);
-  const study = caseStudyFor(account.industry);
   const brand = config.brandName;
   const deep = arms.personalization === "deep";
   const phrase = signalPhrase(sig, account);
@@ -138,11 +177,11 @@ export function templateCopy(account: Account, model: ScoringModel, arms: Experi
     ? `We noticed ${phrase}. Here is how teams shipping ~${roi.shipmentsPerMonth.toLocaleString()} loads a month handled the same moment.`
     : `Capacity, tracking and exception handling, run by a dedicated team on one platform.`;
   const videoScript = deep
-    ? `Hi ${name}, this is ${brand}. I noticed ${phrase} at ${account.companyName}. Teams at your volume, around ${roi.shipmentsPerMonth.toLocaleString()} loads a month, usually hit a wall where every new shipment means another phone call. ${proofPoint(account.industry)} I put together a page with your numbers; the link is below. Worth fifteen minutes?`
+    ? `Hi ${name}, this is ${brand}. I noticed ${phrase} at ${account.companyName}. Teams at your volume, around ${roi.shipmentsPerMonth.toLocaleString()} loads a month, usually hit a wall where every new shipment means another phone call.${proof ? ` ${proof.sentence}` : ""} I put together a page with your numbers; the link is below. Worth fifteen minutes?`
     : `Hi ${name}, this is ${brand}. We help ${account.industry.toLowerCase()} companies run shipping with a dedicated team instead of more coordinators. I put together a short page with an ROI estimate for a company your size. Worth fifteen minutes?`;
   const emailSubject = deep ? `${account.companyName} + ${phrase.replace(/^the /, "")}` : `Shipping operations that scale, for ${account.companyName}`;
   const emailBody = deep
-    ? `${name},\n\nSaw ${phrase} at ${account.companyName}. ${angle}.\n\nI recorded a 20-second note and built a page with your numbers (about ${roi.shipmentsPerMonth.toLocaleString()} loads/month): {{page_url}}\n\nRelevant: "${study.title}" (${study.metrics[0].value} ${study.metrics[0].label.toLowerCase()}).\n\nOpen to 15 minutes next week?`
+    ? `${name},\n\nSaw ${phrase} at ${account.companyName}. ${angle}.\n\nI recorded a 20-second note and built a page with your numbers (about ${roi.shipmentsPerMonth.toLocaleString()} loads/month): {{page_url}}${proof ? `\n\nRelevant: "${proof.title}" (${proof.value} ${proof.metric.toLowerCase()}).` : ""}\n\nOpen to 15 minutes next week?`
     : `${name},\n\n${brand} runs shipping operations for ${account.industry.toLowerCase()} companies so the team stops coordinating and starts managing.\n\nShort overview and an ROI estimate here: {{page_url}}\n\nOpen to 15 minutes next week?`;
   return { headline, subheadline, videoScript, emailSubject, emailBody, generatedBy: "template" };
 }
@@ -155,8 +194,8 @@ const CopySchema = z.object({
   emailBody: z.string().describe("4-6 short lines, plain text, includes the literal token {{page_url}} once"),
 });
 
-export async function generateCopy(account: Account, model: ScoringModel, arms: ExperimentArms): Promise<CampaignCopy> {
-  const template = templateCopy(account, model, arms);
+export async function generateCopy(account: Account, model: ScoringModel, arms: ExperimentArms, proof: ProofLine | null = null): Promise<CampaignCopy> {
+  const template = templateCopy(account, model, arms, proof);
   if (arms.personalization !== "deep") return template;
   const sig = topSignal(account);
   const result = await generateStructured({
@@ -165,6 +204,7 @@ export async function generateCopy(account: Account, model: ScoringModel, arms: 
     system:
       `You are the campaign agent for ${config.brandName}, a managed transportation provider for shippers. ` +
       "You write short, specific, non-hypey outbound copy grounded only in the evidence provided. Never invent facts about the prospect. " +
+      "Cite a customer result ONLY if one is provided below, exactly as given; otherwise make no customer claims or numbers. " +
       "Tone: a sharp operator writing to a peer. No exclamation marks.",
     user:
       `Account: ${account.companyName} (${account.industry}, ${account.employeeCount} employees, ${account.hqCity}, ${account.hqState}).\n` +
@@ -174,7 +214,7 @@ export async function generateCopy(account: Account, model: ScoringModel, arms: 
       `Messaging angle to use: ${angleFor(account, model, arms.angleVariant)}.\n` +
       `Pain hypothesis: ${account.painHypothesis ?? "n/a"}.\n` +
       `ROI defaults: ${JSON.stringify(roiDefaultsFor(account))}.\n` +
-      `Case study to reference: ${caseStudyFor(account.industry).title}.\n` +
+      `Customer proof you may cite (verbatim, or omit): ${proof ? `"${proof.title}": ${proof.value} ${proof.metric}` : "NONE - do not mention any customer result"}.\n` +
       `Template draft (improve, keep the facts): ${JSON.stringify(template)}`,
   });
   if (!result) return template;
@@ -183,12 +223,13 @@ export async function generateCopy(account: Account, model: ScoringModel, arms: 
 
 // --- Outreach sequence -------------------------------------------------------------
 
-export function buildTouches(account: Account, campaign: Campaign, copy: CampaignCopy): OutreachTouch[] {
+export function buildTouches(account: Account, campaign: Campaign, copy: CampaignCopy, proof: ProofLine | null = null): OutreachTouch[] {
   const base = Date.now();
-  const at = (days: number) => new Date(base + days * 86_400_000).toISOString();
+  // A paused account's sequence starts when the pause ends.
+  const start = account.pausedUntil && account.pausedUntil > new Date(base).toISOString() ? new Date(account.pausedUntil).getTime() : base;
+  const at = (days: number) => new Date(start + days * 86_400_000).toISOString();
   const page = campaign.pageUrl;
   const name = firstName(account);
-  const study = caseStudyFor(account.industry);
   const touches: OutreachTouch[] = [
     {
       id: uuid(),
@@ -217,7 +258,9 @@ export function buildTouches(account: Account, campaign: Campaign, copy: Campaig
       channel: "email",
       step: 3,
       subject: `Re: ${copy.emailSubject}`,
-      body: `${name}, one more data point: "${study.title}" (${study.metrics.map((m) => `${m.value} ${m.label.toLowerCase()}`).join(", ")}).\n\nThe page has the full story and your ROI estimate: ${page}#case-study`,
+      body: proof
+        ? `${name}, one more data point: "${proof.title}" (${proof.value} ${proof.metric.toLowerCase()}).\n\nThe page has the full story and your ROI estimate: ${page}`
+        : `${name}, the page has your ROI estimate, built from the numbers we could see publicly: ${page}\n\nHappy to walk through the assumptions on a short call.`,
       status: "scheduled",
       scheduledFor: at(4),
       provider: "pending",
@@ -244,6 +287,13 @@ export function buildTouches(account: Account, campaign: Campaign, copy: Campaig
       provider: "pending",
     },
   ];
+  const titles: Record<number, string> = { 1: "Intro email", 2: "LinkedIn connection note", 3: "Follow-up email", 4: "InMail", 5: "Break-up email", 6: "Gift" };
+  for (const t of touches) {
+    t.source = "sequence";
+    t.title = titles[t.step] ?? `Step ${t.step}`;
+    t.assigneeRepId = account.ownerRepId ?? null;
+    t.attempts = 0;
+  }
   if (campaign.arms.gifting === "gift") {
     touches.push({
       id: uuid(),
@@ -254,6 +304,10 @@ export function buildTouches(account: Account, campaign: Campaign, copy: Campaig
       status: "scheduled",
       scheduledFor: at(3),
       provider: "pending",
+      source: "sequence",
+      title: "Gift",
+      assigneeRepId: account.ownerRepId ?? null,
+      attempts: 0,
     });
   }
   return touches;
@@ -261,15 +315,22 @@ export function buildTouches(account: Account, campaign: Campaign, copy: Campaig
 
 // --- Launch -------------------------------------------------------------------------
 
+/**
+ * Build the campaign and its tasks, then attempt the sequence launch. The
+ * campaign is "live" only after the outreach provider acknowledges the launch;
+ * otherwise it stays "pending" (retried with backoff by the Campaign Agent) or
+ * "failed" (needs a person), and the account is not marked campaign_live.
+ */
 export async function launchCampaign(
   account: Account,
   ctx: { store: Store; providers: Providers; model: ScoringModel; log?: (s: string) => void },
 ): Promise<Account> {
-  // Default arms, then overrides from any running Lab experiment the account is eligible for.
+  // Default arms, then the configuration of whichever Lab arm (control or treatment) the account is in.
   const { assignments, overrides } = await applyExperiments(account);
   const arms: ExperimentArms = { ...assignArms(account.id), ...(overrides as Partial<ExperimentArms>) };
   account = { ...account, experiments: assignments };
-  const copy = await generateCopy(account, ctx.model, arms);
+  const proof = await loadProofLine(account);
+  const copy = await generateCopy(account, ctx.model, arms, proof);
   const pageUrl = pageUrlFor(account);
   const roi = roiDefaultsFor(account);
 
@@ -285,26 +346,48 @@ export async function launchCampaign(
     scriptVersion: 0,
     videoAttempts: 0,
     roiDefaults: roi,
-    caseStudyId: caseStudyFor(account.industry).id,
+    caseStudyId: proof?.storyId ?? "none",
+    proofStoryId: proof?.storyId ?? null,
     pageUrl,
     arms,
     launchedAt: nowIso(),
+    launchState: "pending",
+    launchError: null,
+    sequenceId: null,
   };
 
-  // Outreach sequence: registered with the provider; the engine sends due touches unless the provider owns scheduling.
-  const touches = buildTouches(account, campaign, copy);
-  let launched: OutreachTouch[] = touches;
-  try {
-    launched = await ctx.providers.outreach.launchSequence({ ...account, campaign }, touches);
-  } catch (err) {
-    ctx.log?.(`outreach provider failed for ${account.slug}: ${(err as Error).message}`);
-  }
-  await ctx.store.insertOutreach(launched);
+  await ctx.store.insertOutreach(buildTouches(account, campaign, copy, proof));
+  const prepared: Account = { ...account, campaign, messagingAngle: account.messagingAngle ?? campaign.angle };
+  return attemptLaunch(ctx.store, ctx.providers, prepared, ctx.log);
+}
 
+/** Launch (or retry launching) the sequence under the durable operation `launch:<accountId>`. */
+export async function attemptLaunch(store: Store, providers: Providers, account: Account, log?: (s: string) => void): Promise<Account> {
+  if (!account.campaign) return account;
+  const touches = (await store.listOutreach({ accountId: account.id })).filter((t) => t.source === "sequence" || t.source === undefined);
+  const outcome = await runOperation(store, { id: `launch:${account.id}`, kind: "sequence_launch", accountId: account.id, destination: providers.outreach.name, maxAttempts: 5 }, async (key) => {
+    const r = await providers.outreach.launchSequence(account, touches, key);
+    for (const t of r.touches) await store.updateOutreach(t);
+    return { remoteId: r.sequenceId, result: { touches: r.touches.length } };
+  });
+
+  if (outcome.state === "succeeded") {
+    const live: Account = {
+      ...account,
+      campaign: { ...account.campaign, launchState: "live", launchError: null, sequenceId: outcome.remoteId ?? account.campaign.sequenceId ?? null },
+      status: ["qualified", "scored", "needs_enrichment"].includes(account.status) ? "campaign_live" : account.status,
+    };
+    if (!outcome.replayed) await logActivity(store, account.id, "campaign", "sequence_live", `Sequence acknowledged by ${providers.outreach.name}${outcome.remoteId ? ` (${outcome.remoteId})` : ""}`);
+    return live;
+  }
+  if (outcome.state === "busy" || outcome.state === "not_due") return account;
+
+  log?.(`sequence launch failed for ${account.slug}: ${outcome.error}`);
+  await logActivity(store, account.id, "campaign", "sequence_launch_failed", `Sequence launch failed (attempt ${outcome.attempts})${outcome.retryable ? "; retrying automatically" : "; needs attention"}`, [outcome.error]);
   return {
     ...account,
-    campaign,
-    messagingAngle: account.messagingAngle ?? campaign.angle,
-    status: "campaign_live",
+    campaign: { ...account.campaign, launchState: outcome.retryable ? "pending" : "failed", launchError: outcome.error },
+    // Never "campaign_live" without an acknowledged launch.
+    status: account.status === "campaign_live" ? "qualified" : account.status,
   };
 }

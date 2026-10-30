@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { runAgent } from "@/lib/agents/runtime";
-import { error, json } from "@/lib/api";
+import { error, json, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
 import { logActivity } from "@/lib/engine/activity";
 import { recordEngagement } from "@/lib/engine/engagement";
@@ -45,6 +45,8 @@ const EVENT_MAP: Record<string, string> = {
 };
 
 export async function POST(req: Request) {
+  const blocked = callbackSecretMissing(config.resend.webhookSecret, "RESEND_WEBHOOK_SECRET");
+  if (blocked) return blocked;
   const raw = await req.text();
   if (!verify(raw, req.headers)) return error("invalid signature", 401);
   let body: { type?: string; data?: { email_id?: string; tags?: Record<string, string>; click?: { link?: string }; to?: string[] } };

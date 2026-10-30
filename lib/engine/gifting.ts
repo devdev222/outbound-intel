@@ -53,9 +53,19 @@ export async function proposeGifts(store: Store, campaign: GiftCampaign, opts: {
   return out;
 }
 
+/** Allowed gift transitions; anything else is refused (409) instead of silently rewriting history. */
+const TRANSITIONS: Record<string, string[]> = { proposed: ["approved", "rejected"], approved: ["ordered", "canceled"], ordered: ["delivered", "canceled"], delivered: [], rejected: [], canceled: [] };
+
+export class GiftTransitionError extends Error {}
+
+function assertTransition(from: string, to: string): void {
+  if (!(TRANSITIONS[from] ?? []).includes(to)) throw new GiftTransitionError(`gift is ${from}; cannot move to ${to}`);
+}
+
 export async function decideGift(store: Store, giftId: string, decision: "approved" | "rejected", user: User, note?: string): Promise<Gift | null> {
   const gift = await giftCol.get(giftId);
   if (!gift) return null;
+  assertTransition(gift.status, decision);
   const campaign = await campCol.get(gift.campaignId);
   if (decision === "approved" && campaign) {
     const left = campaign.budgetTotal - (await spent(campaign.id));
@@ -74,6 +84,7 @@ export async function decideGift(store: Store, giftId: string, decision: "approv
 export async function updateFulfillment(store: Store, giftId: string, status: "ordered" | "delivered" | "canceled", user: User): Promise<Gift | null> {
   const gift = await giftCol.get(giftId);
   if (!gift) return null;
+  assertTransition(gift.status, status);
   const updated: Gift = { ...gift, status, deliveredAt: status === "delivered" ? nowIso() : gift.deliveredAt };
   await giftCol.put(updated);
   await logActivity(store, gift.accountId, "rep", `gift_${status}`, `Gift ${status} (${user.name})`);

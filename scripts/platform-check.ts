@@ -25,9 +25,9 @@ async function main() {
   console.log(`readiness: ${ready.length} ready, ${blocked.length} need enrichment; blockers sample: ${blocked[0]?.readiness?.blockers.join(" | ") ?? "-"}`);
   console.log(`reps: ${(await reps.list()).map((r) => r.name).join(", ")}; owners assigned: ${accounts.filter((a) => a.ownerRepId).length}`);
 
-  const q = await buildWorkQueue(store, "rep_sam");
-  console.log(`work queue (rep_sam): high-intent ${q.counts.highIntent}, calls ${q.counts.callsReady}, follow-ups ${q.counts.followUps}, meetings ${q.counts.meetings}, exceptions ${q.counts.exceptions}`);
-  const item = q.callsReady[0] ?? q.highIntent[0];
+  const q = await buildWorkQueue(store, providers, "rep_sam");
+  console.log(`work queue (rep_sam): now ${q.counts.now}, meetings ${q.counts.meetings}, follow-ups ${q.counts.follow_ups}, needs attention ${q.counts.needs_attention}, paused ${q.paused}`);
+  const item = q.items.find((i) => i.category === "now");
   if (item) {
     console.log(`  first item: ${item.company} | why now: ${item.whyNow} | next: ${item.nextAction?.label} | proof: ${item.proof?.customer ?? "-"}`);
     const acct = (await store.getAccountBySlug(item.slug))!;

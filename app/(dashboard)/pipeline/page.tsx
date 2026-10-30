@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { canonicalOpportunities } from "@/lib/engine/opportunities";
 import { Recommendations } from "@/components/exec/Recommendations";
 import { Badge, Card, Kpi, PageHeader, Synthetic, fmtAgo, fmtMoney } from "@/components/ui";
 import { requireRole } from "@/lib/auth";
@@ -30,7 +31,7 @@ export default async function PipelinePage() {
   const meetings = new Set(outcomes.filter((o) => o.outcomeType === "meeting_booked").map((o) => o.accountId)).size;
   const allOutcomes = await store.listOutcomes();
   const meetingAccounts = new Set(allOutcomes.filter((o) => o.outcomeType === "meeting_booked").map((o) => o.accountId));
-  const oppAccounts = new Set(allOutcomes.filter((o) => o.outcomeType === "opportunity_created" || o.outcomeType === "deal_won").map((o) => o.accountId));
+  const oppAccounts = new Set(canonicalOpportunities(allOutcomes).map((o) => o.accountId));
   const readyToMeeting = ready ? meetingAccounts.size / Math.max(ready, meetingAccounts.size) : 0;
   const meetingToOpp = meetingAccounts.size ? [...oppAccounts].filter((id) => meetingAccounts.has(id)).length / meetingAccounts.size : 0;
   void meetings;
@@ -62,7 +63,7 @@ export default async function PipelinePage() {
         </div>
         {enrichment > 0 && (
           <div className="card-hint mt-3">
-            {enrichment} account{enrichment === 1 ? "" : "s"} scored above the threshold but returned to enrichment (missing contact, evidence or ownership checks). <Link href="/accounts?status=needs_enrichment" className="underline">Review</Link>
+            {enrichment} account{enrichment === 1 ? "" : "s"} scored above the threshold but returned to enrichment (missing contact, evidence or ownership checks). <Link href="/accounts?view=enrichment" className="underline">Review</Link>
           </div>
         )}
       </Card>

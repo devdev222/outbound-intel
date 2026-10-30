@@ -42,6 +42,8 @@ Rough effort to wire each real system, assuming credentials are in hand:
 
 ---
 
+> **Database:** apply `supabase/migrations/0001_init.sql` through `0004_reliability.sql` in order before switching `STORE_PROVIDER=supabase`; `npm run check` verifies the schema version.
+
 ## Supabase
 
 1. Create a project, run `supabase/migrations/0001_init.sql` (SQL editor or `supabase db push`).

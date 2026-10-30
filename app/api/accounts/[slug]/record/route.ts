@@ -1,3 +1,4 @@
+import { requireApiRole } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { PAGE_RECORD_VERSION, pageRecordFor } from "@/lib/engine/page-record";
 import { getStore } from "@/lib/store";
@@ -11,6 +12,8 @@ export const dynamic = "force-dynamic";
  * page statically with the Astro project. Accepts {slug} or {slug}-{token}.
  */
 export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const auth = await requireApiRole(["bdr", "exec", "admin"]);
+  if ("response" in auth) return auth.response;
   const { slug: param } = await params;
   const store = getStore();
   const { slug, token } = parsePageParam(param);

@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { runAgent } from "@/lib/agents/runtime";
-import { error, json, safeEqual } from "@/lib/api";
+import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
 import { recordOutcome } from "@/lib/engine/outcomes";
 import { getProviders } from "@/lib/providers";
@@ -22,6 +22,8 @@ export const dynamic = "force-dynamic";
  * then the invitee's email domain.
  */
 export async function POST(req: Request) {
+  const blocked = callbackSecretMissing(config.calendly.signingKey, "CALENDLY_WEBHOOK_SIGNING_KEY");
+  if (blocked) return blocked;
   const raw = await req.text();
   if (config.calendly.signingKey) {
     const header = req.headers.get("calendly-webhook-signature") ?? "";

@@ -99,7 +99,7 @@
 .cp a { color: inherit; }
 .cp h1, .cp h2, .cp h3, .cp h4, .cp p, .cp blockquote, .cp figure { margin: 0; }
 .cp h1, .cp h2, .cp h3 { font-weight: var(--weight-regular); }
-.cp button, .cp input, .cp select { font: inherit; color: inherit; }
+:where(.cp) button, :where(.cp) input, :where(.cp) select { font: inherit; color: inherit; }
 .cp [id] { scroll-margin-top: 24px; }
 
 .cp-container {

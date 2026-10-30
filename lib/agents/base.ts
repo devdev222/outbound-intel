@@ -52,16 +52,30 @@ export function upstreamChangedSince(account: Account, agentId: AgentId, upstrea
   return upstream.some((u) => (account.agentRuns[u] ?? "") > last);
 }
 
-/** Run `fn` over items with bounded concurrency, collecting results in order. */
+/**
+ * Run `fn` over items with bounded concurrency, collecting results in order.
+ * One failing item never stops the others: every item is attempted, then the
+ * failures (if any) are thrown together so the run is recorded as an error
+ * with each account's message.
+ */
 export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
+  const errors: { index: number; error: unknown }[] = [];
   let next = 0;
   const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
     while (next < items.length) {
       const i = next++;
-      results[i] = await fn(items[i], i);
+      try {
+        results[i] = await fn(items[i], i);
+      } catch (error) {
+        errors.push({ index: i, error });
+      }
     }
   });
   await Promise.all(workers);
+  if (errors.length) {
+    const msgs = errors.map((e) => (e.error as Error)?.message ?? String(e.error));
+    throw new AggregateError(errors.map((e) => e.error), `${errors.length} of ${items.length} items failed: ${msgs.slice(0, 3).join("; ")}`);
+  }
   return results;
 }

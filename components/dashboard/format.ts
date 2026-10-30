@@ -82,10 +82,13 @@ export function scoreColor(total: number): string {
 export function outreachPillClass(status: string): string {
   switch (status) {
     case "sent":
+    case "done":
       return "pill pill-good";
     case "scheduled":
+    case "sending":
       return "pill pill-info";
-    case "awaiting_rep":
+    case "awaiting_approval":
+    case "manual":
       return "pill pill-warn";
     case "failed":
       return "pill pill-bad";

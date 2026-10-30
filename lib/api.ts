@@ -57,3 +57,14 @@ export function safeEqual(a: string, b: string): boolean {
   for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return out === 0;
 }
+
+/**
+ * Callback guard: in live mode a callback whose verification secret is not
+ * configured is refused outright (503) instead of accepting unsigned requests.
+ * Demo/test keep the permissive behaviour so local tooling works.
+ */
+export function callbackSecretMissing(secret: string, envName: string): NextResponse | null {
+  if (secret) return null;
+  if (process.env.APP_MODE === "live") return error(`callback disabled: ${envName} is not configured`, 503);
+  return null;
+}

@@ -8,10 +8,14 @@ import type {
   CallQueueItem,
   EngagementEvent,
   HistoricalRecord,
+  Operation,
   Outcome,
   OutreachTouch,
   ScoringModel,
 } from "@/lib/types";
+
+/** Fields of an Operation a claimant may update when finishing it. */
+export type OperationPatch = Partial<Pick<Operation, "status" | "attempts" | "nextAttemptAt" | "remoteId" | "lastError" | "result" | "leaseOwner" | "leaseUntil">>;
 
 /**
  * Persistence boundary. Two implementations ship: FileStore (JSON on disk, zero
@@ -20,6 +24,9 @@ import type {
  */
 export interface Store {
   readonly kind: "file" | "memory" | "supabase";
+
+  /** Applied schema version (Supabase: app_meta.schema_version; local stores: the code version). null when unreadable. */
+  schemaVersion(): Promise<string | null>;
 
   // Accounts
   listAccounts(): Promise<Account[]>;
@@ -32,6 +39,9 @@ export interface Store {
   // Historical records (training data)
   listHistorical(): Promise<HistoricalRecord[]>;
   insertHistorical(records: HistoricalRecord[]): Promise<void>;
+  /** Insert or replace ONE record by id (outcome feedback). Never rewrites other rows. */
+  upsertHistorical(record: HistoricalRecord): Promise<void>;
+  /** Administrative full replacement (CRM re-import / demo seed only). */
   replaceHistorical(records: HistoricalRecord[]): Promise<void>;
 
   // Engagement events
@@ -58,7 +68,23 @@ export interface Store {
   insertOutreach(touches: OutreachTouch[]): Promise<void>;
   updateOutreach(touch: OutreachTouch): Promise<void>;
   getOutreach(id: string): Promise<OutreachTouch | null>;
-  listOutreach(opts?: { accountId?: string; status?: OutreachTouch["status"]; dueBefore?: string; limit?: number }): Promise<OutreachTouch[]>;
+  listOutreach(opts?: { accountId?: string; status?: OutreachTouch["status"] | OutreachTouch["status"][]; dueBefore?: string; limit?: number }): Promise<OutreachTouch[]>;
+
+  // Durable operations (idempotency + leases). Claims are atomic per operation id:
+  // two workers calling claimOperation for the same id never both succeed.
+  /** Insert the operation if no record with that id exists; return the stored record either way. */
+  ensureOperation(op: Operation): Promise<Operation>;
+  getOperation(id: string): Promise<Operation | null>;
+  /**
+   * Atomically claim: succeeds only when status is pending/failed, the lease is free or
+   * expired, and nextAttemptAt has passed. Returns the claimed record or null.
+   */
+  claimOperation(id: string, owner: string, leaseMs: number): Promise<Operation | null>;
+  /** Update an operation the caller holds (owner must match the current lease owner). */
+  finishOperation(id: string, owner: string, patch: OperationPatch): Promise<Operation | null>;
+  /** Put a failed/dead operation back to pending (a person chose to retry). No-op while actively leased. */
+  requeueOperation(id: string): Promise<Operation | null>;
+  listOperations(opts?: { accountId?: string; status?: Operation["status"]; kind?: Operation["kind"]; limit?: number }): Promise<Operation[]>;
 
   // Per-account activity (team audit trail)
   insertActivity(entries: ActivityEntry[]): Promise<void>;

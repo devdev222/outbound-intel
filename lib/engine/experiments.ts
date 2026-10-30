@@ -1,4 +1,5 @@
 import type { Store } from "@/lib/store";
+import { canonicalOpportunities } from "./opportunities";
 import { experiments as expCol, gifts as giftCol, getSettings } from "@/lib/store/collections";
 import type { Account, ArmResult, Experiment, ExperimentResults, ExperimentArm, Outcome, PlatformSettings } from "@/lib/types";
 import { hash32, nowIso, uuid } from "@/lib/util";
@@ -41,7 +42,8 @@ export async function applyExperiments(account: Account): Promise<{ assignments:
     if (!eligible(exp, account)) continue;
     const arm = assignments[exp.id] ? exp.arms.find((a) => a.key === assignments[exp.id]) ?? assignArm(exp, account.id) : assignArm(exp, account.id);
     assignments[exp.id] = arm.key;
-    if (!arm.control) Object.assign(overrides, arm.config);
+    // Controls apply their config too: a control that pins angleVariant "A" must not inherit a default or another arm's value.
+    Object.assign(overrides, arm.config);
   }
   return { assignments, overrides };
 }
@@ -71,6 +73,8 @@ export async function computeResults(store: Store, exp: Experiment, settingsIn?:
   const gifts = (await giftCol.list()).filter((g) => g.status === "delivered" || g.status === "ordered");
   const byAccount = new Map<string, Outcome[]>();
   for (const o of outcomes) byAccount.set(o.accountId, [...(byAccount.get(o.accountId) ?? []), o]);
+  const oppsByAccount = new Map<string, ReturnType<typeof canonicalOpportunities>>();
+  for (const o of canonicalOpportunities(outcomes)) oppsByAccount.set(o.accountId, [...(oppsByAccount.get(o.accountId) ?? []), o]);
 
   const arms: ArmResult[] = exp.arms.map((arm) => {
     const members = accounts.filter((a) => a.experiments?.[exp.id] === arm.key);
@@ -81,9 +85,9 @@ export async function computeResults(store: Store, exp: Experiment, settingsIn?:
     for (const a of members) {
       const os = byAccount.get(a.id) ?? [];
       if (os.some((o) => o.outcomeType === "meeting_booked")) meetingsBooked++;
-      if (os.some((o) => o.outcomeType === "opportunity_created" || o.outcomeType === "deal_won")) {
+      for (const opp of (oppsByAccount.get(a.id) ?? []).filter((o) => o.stage !== "lost")) {
         opportunities++;
-        pipeline += a.pipelineValue ?? settings.economics.avgOpportunityValue;
+        pipeline += opp.value ?? a.pipelineValue ?? settings.economics.avgOpportunityValue;
       }
       if (a.campaign?.videoSource === "ai" && a.campaign.videoStatus === "ready") cost += settings.economics.videoCostPerRender;
       cost += gifts.filter((g) => g.accountId === a.id).reduce((s, g) => s + g.amount, 0);
@@ -114,6 +118,19 @@ export async function computeResults(store: Store, exp: Experiment, settingsIn?:
       const base = control.conversionRate || 0;
       const lift = base ? (a.conversionRate - base) / base : a.conversionRate > 0 ? 1 : 0;
       const minN = 30;
+      // The z-test compares proportions of accounts. It does not match a pipeline-value metric, and
+      // meetings_held is an estimate (booked x hold rate), so significance is suppressed for both.
+      const testable = exp.primaryMetric === "meetings_booked" || exp.primaryMetric === "opportunities";
+      if (!testable) {
+        return {
+          armKey: a.armKey,
+          lift,
+          zScore: 0,
+          pValue: 1,
+          significant: false,
+          sampleWarning: exp.primaryMetric === "qualified_pipeline" ? "significance not computed: pipeline value is not a proportion; read the lift as directional" : "significance not computed: meetings held is estimated from bookings; read the lift as directional",
+        };
+      }
       return {
         armKey: a.armKey,
         lift,

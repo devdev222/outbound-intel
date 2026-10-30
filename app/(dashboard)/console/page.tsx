@@ -3,7 +3,7 @@ import { Badge, Card, PageHeader, Stat } from "@/components/ui";
 import { AGENTS } from "@/lib/agents";
 import { loopStatus } from "@/lib/agents/runtime";
 import { requireRole } from "@/lib/auth";
-import { getIntegrations } from "@/lib/integrations";
+import { getConnections } from "@/lib/integrations";
 import { getStore } from "@/lib/store";
 import { getSettings } from "@/lib/store/collections";
 
@@ -13,8 +13,9 @@ export default async function ConsolePage() {
   await requireRole(["admin"]);
   const store = getStore();
   const [accounts, states, runs, model, settings] = await Promise.all([store.listAccounts(), store.getAgentStates(), store.listAgentRuns({ limit: 100 }), store.getLatestModel(), getSettings()]);
-  const integrations = getIntegrations();
+  const integrations = await getConnections(store);
   const missing = integrations.filter((i) => i.status === "not_configured");
+  const degraded = integrations.filter((i) => i.status === "degraded");
   const loop = loopStatus();
   const erroring = AGENTS.filter((a) => states.find((s) => s.agentId === a.id)?.lastStatus === "error");
   const recentErrors = runs.filter((r) => r.status === "error").length;
@@ -41,10 +42,13 @@ export default async function ConsolePage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card title="Integrations" actions={<Link href="/console/integrations" className="text-xs text-[var(--info)]">manage</Link>}>
           <div className="flex flex-wrap gap-2">
-            <Badge tone="good">{integrations.filter((i) => i.status === "connected").length} connected</Badge>
+            <Badge tone="good">{integrations.filter((i) => i.status === "verified").length} verified</Badge>
+            <Badge tone="info">{integrations.filter((i) => i.status === "configured").length} configured</Badge>
+            {degraded.length > 0 && <Badge tone="bad">{degraded.length} degraded</Badge>}
             <Badge tone="warn">{integrations.filter((i) => i.status === "mock").length} mock</Badge>
             <Badge>{missing.length} not configured</Badge>
           </div>
+          {degraded.length > 0 && <div className="mt-2 text-xs text-[var(--bad)]">Degraded: {degraded.map((m) => m.name).join(", ")}</div>}
           {missing.length > 0 && <div className="mt-2 text-xs text-[var(--muted)]">Missing: {missing.map((m) => m.name).join(", ")}</div>}
         </Card>
         <Card title="Agents" actions={<Link href="/console/agents" className="text-xs text-[var(--info)]">manage</Link>}>

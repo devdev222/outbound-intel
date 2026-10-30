@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useCalcState } from "./CalcState";
 import { roundOutputs } from "./calc";
+import { newRequestId, submitProspect } from "./prospect-submit";
 import { track } from "./Tracker";
 
 /**
@@ -12,22 +13,32 @@ import { track } from "./Tracker";
  * - With a scheduler link (Calendly), the primary button opens it in a new tab
  *   with prefill + UTM tags; the click is tracked by Tracker via data-booking.
  * - Without one, the primary button reveals the built-in request form, which
- *   records a meeting request through the engine's outcomes endpoint.
- * - The estimate form posts `estimate_submitted` to /api/track with the
- *   visitor's email and the current calculator inputs/results, then shows the
- *   Astro template's success copy.
+ *   posts to /api/prospect/meeting-request: a meeting REQUEST plus an assigned
+ *   scheduling task (not a booked meeting).
+ * - The estimate form posts to /api/prospect/estimate, which creates an
+ *   awaiting-approval email task with the visitor's numbers.
+ * Both show success only after the server acknowledges, retry transient
+ * failures with the same request id, and offer "Try again" otherwise.
  */
 export interface BookingCTAProps {
   slug: string;
+  token: string;
   repName: string;
   bookingHref: string | null;
   contactName?: string;
   contactEmail?: string;
 }
 
+/** Keep only flat number/string fields for the estimate endpoint. */
+function numeric(o: object): Record<string, number | string> {
+  const out: Record<string, number | string> = {};
+  for (const [k, v] of Object.entries(o)) if (typeof v === "number" ? Number.isFinite(v) : typeof v === "string") out[k] = v as number | string;
+  return out;
+}
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-export default function BookingCTA({ slug, repName, bookingHref, contactName, contactEmail }: BookingCTAProps) {
+export default function BookingCTA({ slug, token, repName, bookingHref, contactName, contactEmail }: BookingCTAProps) {
   const who = repName || "us";
   return (
     <div className="cp-convert">
@@ -40,18 +51,21 @@ export default function BookingCTA({ slug, repName, bookingHref, contactName, co
           Validate this estimate with us <span className="cp-arrow" aria-hidden="true">→</span>
         </a>
       ) : (
-        <RequestForm slug={slug} contactName={contactName} contactEmail={contactEmail} />
+        <RequestForm slug={slug} token={token} contactName={contactName} contactEmail={contactEmail} />
       )}
-      <EstimateForm slug={slug} repName={repName} contactEmail={contactEmail} />
+      <EstimateForm slug={slug} token={token} repName={repName} contactEmail={contactEmail} />
     </div>
   );
 }
 
-function RequestForm({ slug, contactName, contactEmail }: { slug: string; contactName?: string; contactEmail?: string }) {
+function RequestForm({ slug, token, contactName, contactEmail }: { slug: string; token: string; contactName?: string; contactEmail?: string }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(contactName ?? "");
   const [email, setEmail] = useState(contactEmail ?? "");
-  const [state, setState] = useState<"idle" | "sending" | "done" | "error">("idle");
+  const [state, setState] = useState<"idle" | "sending" | "done" | "error" | "failed">("idle");
+  const [failure, setFailure] = useState("");
+  const [requestId] = useState(newRequestId);
+  const [honeypot, setHoneypot] = useState("");
 
   const reveal = () => {
     setOpen(true);
@@ -66,15 +80,11 @@ function RequestForm({ slug, contactName, contactEmail }: { slug: string; contac
       return;
     }
     setState("sending");
-    try {
-      const res = await fetch("/api/outcomes", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slug, outcomeType: "meeting_booked", notes: `Requested via personalized page by ${name || "visitor"} <${email}>`, source: "landing-page" }),
-      });
-      setState(res.ok ? "done" : "error");
-    } catch {
-      setState("error");
+    const r = await submitProspect("/api/prospect/meeting-request", { slug, token, requestId, name: name.trim(), email: email.trim().toLowerCase(), website: honeypot });
+    if (r.ok) setState("done");
+    else {
+      setFailure(r.message);
+      setState("failed");
     }
   };
 
@@ -108,10 +118,16 @@ function RequestForm({ slug, contactName, contactEmail }: { slug: string; contac
               onChange={(e) => setEmail(e.target.value)}
               required
             />
+            <input className="cp-sr-only" type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" value={honeypot} onChange={(e) => setHoneypot(e.target.value)} />
             <button className="cp-btn cp-btn--light cp-send__submit" type="submit" disabled={state === "sending"}>
-              {state === "sending" ? "Sending…" : "Send me times"}
+              {state === "sending" ? "Sending…" : state === "failed" ? "Try again" : "Send me times"}
             </button>
           </div>
+          {state === "failed" && (
+            <p className="cp-send__error" role="alert">
+              We couldn&apos;t record your request yet ({failure}). Your details are still here; press Try again.
+            </p>
+          )}
           {state === "error" && (
             <p className="cp-send__error" role="alert">
               Enter a work email address, like you@company.com, and try again.
@@ -130,13 +146,14 @@ function RequestForm({ slug, contactName, contactEmail }: { slug: string; contac
   );
 }
 
-function EstimateForm({ slug, repName, contactEmail }: { slug: string; repName: string; contactEmail?: string }) {
+function EstimateForm({ slug, token, repName, contactEmail }: { slug: string; token: string; repName: string; contactEmail?: string }) {
   const { inputs, outputs } = useCalcState();
   const [email, setEmail] = useState(contactEmail ?? "");
   const [honeypot, setHoneypot] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
+  const [requestId] = useState(newRequestId);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -153,14 +170,9 @@ function EstimateForm({ slug, repName, contactEmail }: { slug: string; repName: 
     }
     setSending(true);
     try {
-      track(slug, "estimate_submitted", {
-        name: "",
-        email: value.toLowerCase(),
-        inputs,
-        results: roundOutputs(outputs),
-        alias: "estimate_submitted",
-      });
-      setSent(value);
+      const r = await submitProspect("/api/prospect/estimate", { slug, token, requestId, email: value.toLowerCase(), inputs: numeric(inputs), results: numeric(roundOutputs(outputs)), source: "estimate" });
+      if (r.ok) setSent(value);
+      else setError(`We couldn't save your request yet (${r.message}). Press the button to try again.`);
     } finally {
       setSending(false);
     }

@@ -33,7 +33,7 @@ const OUTCOMES: { key: string; label: string }[] = [
   { key: "replied", label: "Replied" },
   { key: "meeting_booked", label: "Meeting booked" },
   { key: "not_interested", label: "Not interested" },
-  { key: "not_now", label: "Not now" },
+  { key: "not_now", label: "Not now (pause)" },
   { key: "wrong_contact", label: "Wrong contact" },
 ];
 
@@ -50,11 +50,13 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [approved, setApproved] = useState(false);
+  const [pauseDays, setPauseDays] = useState(30);
+  const [callbackAt, setCallbackAt] = useState("");
 
   async function submit() {
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/conversations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: ctx.slug, channel, outcome, notes }) });
+    const res = await fetch("/api/conversations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: ctx.slug, channel, outcome, notes, ...(outcome === "not_now" ? { pauseDays } : {}), ...(callbackAt && outcome !== "not_now" && outcome !== "not_interested" ? { callbackAt: new Date(callbackAt).toISOString() } : {}) }) });
     const data = await res.json().catch(() => ({}));
     setBusy(false);
     if (!res.ok) return setError(data.error ?? "Could not log the conversation");
@@ -74,7 +76,7 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
     if (res.ok) {
       setApproved(true);
       router.refresh();
-    } else setError("Could not approve the follow-up");
+    } else setError(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Could not approve the follow-up");
   }
 
   if (!open) {
@@ -145,6 +147,23 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
                 </button>
               ))}
             </div>
+            {outcome === "not_now" ? (
+              <label className="flex items-center gap-2 text-[12.5px]">
+                Pause all outreach for
+                <select className="field max-w-[120px]" value={pauseDays} onChange={(e) => setPauseDays(Number(e.target.value))}>
+                  {[14, 30, 60, 90].map((d) => (
+                    <option key={d} value={d}>
+                      {d} days
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : outcome !== "not_interested" && outcome !== "wrong_contact" ? (
+              <label className="flex flex-wrap items-center gap-2 text-[12.5px]">
+                Agreed callback (optional)
+                <input className="field max-w-[220px]" type="datetime-local" value={callbackAt} onChange={(e) => setCallbackAt(e.target.value)} />
+              </label>
+            ) : null}
             <textarea className="field min-h-[110px]" placeholder="What did you hear? Objections, numbers, who owns freight, timing…" value={notes} onChange={(e) => setNotes(e.target.value)} />
             {error && <div className="text-[12px] text-[var(--bad)]">{error}</div>}
             <button className="btn btn-accent" onClick={submit} disabled={busy}>
@@ -174,10 +193,10 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
                 <input className="field" value={subject} onChange={(e) => setSubject(e.target.value)} disabled={approved} />
                 <textarea className="field min-h-[140px]" value={body} onChange={(e) => setBody(e.target.value)} disabled={approved} />
                 {approved ? (
-                  <div className="pill pill-good">Approved and queued</div>
+                  <div className="pill pill-good">Approved; it counts as sent once delivered or marked sent</div>
                 ) : (
                   <button className="btn btn-primary" onClick={approve} disabled={busy}>
-                    Approve & send
+                    Review & approve
                   </button>
                 )}
               </>

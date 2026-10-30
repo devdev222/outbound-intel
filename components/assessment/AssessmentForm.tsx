@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { newRequestId, submitProspect } from "@/components/landing/prospect-submit";
 import { getVisitorId, track } from "@/components/landing/Tracker";
 import { type AssessInputs, computeAssess, DEFAULT_INPUTS } from "./assess";
 
@@ -62,6 +63,9 @@ export default function AssessmentForm({ slug, token, companyName, contactEmail 
   const [step, setStep] = useState(0);
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [email, setEmail] = useState(contactEmail ?? "");
+  const [requestId] = useState(newRequestId);
+  const [assessmentSaved, setAssessmentSaved] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
   const results = useMemo(() => computeAssess(inputs), [inputs]);
 
   useEffect(() => {
@@ -84,16 +88,40 @@ export default function AssessmentForm({ slug, token, companyName, contactEmail 
     if (state === "saving" || state === "saved") return;
     setState("saving");
     track(slug, "section_view", { section: "assessment_submit" });
+    setFailure(null);
     try {
-      const res = await fetch("/api/assessments", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slug, inputs, source: "prospect", visitorId: getVisitorId() }),
-      });
-      if (res.ok && email) {
-        void fetch("/api/track", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug, event: "estimate_submitted", properties: { email, inputs, results: { totalHoursPerWeek: results.totalHoursPerWeek, recoverableHoursHigh: results.recoverableHoursHigh, annualValueHigh: results.annualValueHigh }, alias: "assessment_submitted" }, visitorId: getVisitorId() }), keepalive: true });
+      // Step 1: save the assessment once (a retry after a later failure does not save it twice).
+      if (!assessmentSaved) {
+        const res = await fetch("/api/assessments", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ slug, inputs, source: "prospect", visitorId: getVisitorId() }),
+        });
+        if (!res.ok) {
+          setState("error");
+          return;
+        }
+        setAssessmentSaved(true);
       }
-      setState(res.ok ? "saved" : "error");
+      // Step 2: with an email, ask for the written assessment (awaited, idempotent by requestId).
+      const value = email.trim().toLowerCase();
+      if (value) {
+        const r = await submitProspect("/api/prospect/estimate", {
+          slug,
+          token,
+          requestId,
+          email: value,
+          inputs: Object.fromEntries(Object.entries(inputs).filter(([, v]) => typeof v === "number")),
+          results: { totalHoursPerWeek: results.totalHoursPerWeek, recoverableHoursHigh: results.recoverableHoursHigh, annualValueHigh: results.annualValueHigh },
+          source: "assessment",
+        });
+        if (!r.ok) {
+          setFailure(r.message);
+          setState("error");
+          return;
+        }
+      }
+      setState("saved");
     } catch {
       setState("error");
     }
@@ -136,7 +164,7 @@ export default function AssessmentForm({ slug, token, companyName, contactEmail 
               <div className="cp-assess__save">
                 <input className="cp-send__input" type="email" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} aria-label="Email for your assessment" />
                 <button type="button" className="cp-btn cp-btn--primary cp-btn--compact" onClick={save} disabled={state === "saving" || state === "saved"}>
-                  {state === "saved" ? "Saved" : state === "saving" ? "Saving…" : "Save and send me this assessment"}
+                  {state === "saved" ? "Saved" : state === "saving" ? "Saving…" : state === "error" ? "Try again" : "Save and send me this assessment"}
                 </button>
               </div>
             )}
@@ -147,7 +175,11 @@ export default function AssessmentForm({ slug, token, companyName, contactEmail 
               <a href={`/for/${slug}-${token}#talk`}>Book 15 minutes</a>.
             </p>
           )}
-          {state === "error" && <p className="cp-send__error">Could not save right now. Your numbers are still on this page; try again in a moment.</p>}
+          {state === "error" && (
+            <p className="cp-send__error" role="alert">
+              {assessmentSaved ? `Your numbers are saved, but the email request didn't go through${failure ? ` (${failure})` : ""}. Press the button to try again.` : "Could not save right now. Your numbers are still on this page; try again in a moment."}
+            </p>
+          )}
         </form>
 
         <aside className="cp-assess__results" aria-live="polite">

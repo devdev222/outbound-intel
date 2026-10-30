@@ -1,5 +1,5 @@
 import { runAgent, tick } from "@/lib/agents/runtime";
-import { error, json, safeEqual } from "@/lib/api";
+import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
 import { config } from "@/lib/config";
 import { logActivity } from "@/lib/engine/activity";
 import { recordEngagement } from "@/lib/engine/engagement";
@@ -28,6 +28,8 @@ export const dynamic = "force-dynamic";
  * discovered account from the visitor's company so the team researches it.
  */
 export async function POST(req: Request) {
+  const blocked = callbackSecretMissing(config.rb2b.webhookSecret, "RB2B_WEBHOOK_SECRET");
+  if (blocked) return blocked;
   if (config.rb2b.webhookSecret) {
     const token = new URL(req.url).searchParams.get("token") ?? "";
     if (!safeEqual(token, config.rb2b.webhookSecret)) return error("unauthorized", 401);

@@ -22,11 +22,25 @@ function pick<T extends string>(name: string, allowed: readonly T[], fallback: T
 const onVercel = Boolean(process.env.VERCEL);
 const vercelUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
 
+/**
+ * Operating mode.
+ *  demo  synthetic data, mock providers allowed, placeholders labelled, demo reset/seed available
+ *  live  real data: secure sessions and callback secrets required, demo actions disabled,
+ *        mock enrichment never produces contacts, only approved customer proof is used
+ *  test  automated tests: memory store and mock/test providers are forced by the test harness
+ */
+const mode = pick("APP_MODE", ["demo", "live", "test"] as const, "demo");
+
 export const config = {
+  mode,
   /** Public base URL. Falls back to Vercel's system URL so a first deploy needs no manual setting. */
   appUrl: env("NEXT_PUBLIC_APP_URL") || (vercelUrl ? `https://${vercelUrl}` : "http://localhost:3000"),
   brandName: env("NEXT_PUBLIC_BRAND_NAME", "Cartage"),
-  demoBanner: env("NEXT_PUBLIC_DEMO_BANNER", "true") !== "false",
+  demoBanner: mode !== "live" && env("NEXT_PUBLIC_DEMO_BANNER", "true") !== "false",
+  /** Signs sessions and unsubscribe tokens. Required (>= 32 chars) in live mode. */
+  authSecret: env("AUTH_SECRET"),
+  /** Bearer secret for POST /api/agents/tick from schedulers. Required in live mode. */
+  cronSecret: env("CRON_SECRET"),
 
   /** file (JSON on disk) | memory (ephemeral, for serverless demos) | supabase (production). */
   store: pick("STORE_PROVIDER", ["file", "memory", "supabase"] as const, onVercel ? "memory" : "file"),
@@ -52,12 +66,12 @@ export const config = {
   providers: {
     discovery: pick("DISCOVERY_PROVIDER", ["mock", "clay"] as const, "mock"),
     /** Data source Jerry uses as a tool to verify phones / match LinkedIn. Jerry itself is an agent, not a provider. */
-    enrichment: pick("ENRICHMENT_PROVIDER", ["mock", "clay", "http"] as const, "mock"),
+    enrichment: pick("ENRICHMENT_PROVIDER", ["mock", "clay", "http", "test"] as const, "mock"),
     video: pick("VIDEO_PROVIDER", ["mock", "tavus"] as const, "mock"),
-    outreach: pick("OUTREACH_PROVIDER", ["mock", "resend", "sequencer"] as const, "mock"),
-    dialer: pick("DIALER_PROVIDER", ["mock", "cartage"] as const, "mock"),
+    outreach: pick("OUTREACH_PROVIDER", ["mock", "resend", "sequencer", "test"] as const, "mock"),
+    dialer: pick("DIALER_PROVIDER", ["mock", "cartage", "test"] as const, "mock"),
     analytics: pick("ANALYTICS_PROVIDER", ["none", "posthog"] as const, "none"),
-    alerts: pick("ALERT_PROVIDER", ["console", "slack"] as const, "console"),
+    alerts: pick("ALERT_PROVIDER", ["console", "slack", "test"] as const, "console"),
     crm: pick("CRM_PROVIDER", ["mock", "http"] as const, "mock"),
   },
 
@@ -95,7 +109,10 @@ export const config = {
     mode: pick("JERRY_MODE", ["local", "mcp"] as const, "local"),
     knowledgeDir: env("JERRY_KNOWLEDGE_DIR", "knowledge/jerry"),
     mcpUrl: env("JERRY_MCP_URL"),
+    /** Executable only (e.g. "node" or "/usr/local/bin/jerry"). Arguments go in JERRY_MCP_ARGS. */
     mcpCommand: env("JERRY_MCP_COMMAND"),
+    /** JSON array of arguments, e.g. ["server.js","--stdio"]. Falls back to splitting on whitespace. */
+    mcpArgs: env("JERRY_MCP_ARGS"),
     mcpToken: env("JERRY_MCP_TOKEN"),
   },
   enrichmentHttp: { apiUrl: env("ENRICHMENT_API_URL"), apiKey: env("ENRICHMENT_API_KEY") },
@@ -151,6 +168,33 @@ export const config = {
 } as const;
 
 export type Config = typeof config;
+
+export const isLive = (): boolean => config.mode === "live";
+
+/** Placeholder (synthetic) proof and synthetic contacts may appear only outside live mode, and only labelled. */
+export const allowPlaceholders = (): boolean => config.mode !== "live" && config.demoBanner;
+
+/**
+ * Configuration problems that make live operation unsafe. Empty in demo mode for
+ * anything that only matters live. Shown on /api/health and the console, and
+ * `npm run check` exits non-zero when any exist in live mode.
+ */
+export function configProblems(): { key: string; problem: string; fix: string }[] {
+  const out: { key: string; problem: string; fix: string }[] = [];
+  if (config.mode !== "live") return out;
+  if (config.authSecret.length < 32) out.push({ key: "AUTH_SECRET", problem: "session signing secret missing or shorter than 32 characters", fix: "set AUTH_SECRET to a long random value" });
+  if (process.env.AUTH_DISABLED === "true") out.push({ key: "AUTH_DISABLED", problem: "AUTH_DISABLED is ignored in live mode but should not be set", fix: "remove AUTH_DISABLED" });
+  if (config.store !== "supabase") out.push({ key: "STORE_PROVIDER", problem: `live mode needs durable shared storage, not "${config.store}"`, fix: "set STORE_PROVIDER=supabase and apply supabase/migrations/*.sql in order" });
+  if (config.store === "supabase" && !isSupabaseConfigured()) out.push({ key: "SUPABASE_SECRET_KEY", problem: "Supabase URL or server key missing", fix: "set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SECRET_KEY" });
+  if (!config.cronSecret) out.push({ key: "CRON_SECRET", problem: "the agent tick endpoint would be callable without a secret", fix: "set CRON_SECRET and send it as a Bearer token from the scheduler" });
+  if (config.providers.enrichment === "mock" || config.providers.enrichment === "test") out.push({ key: "ENRICHMENT_PROVIDER", problem: "no real contact enrichment; accounts will stay blocked on contact verification", fix: "set ENRICHMENT_PROVIDER=clay or http" });
+  if (config.providers.discovery === "clay" && !config.clay.inboundSecret) out.push({ key: "CLAY_WEBHOOK_SECRET", problem: "Clay callbacks enabled without a verification secret", fix: "set CLAY_WEBHOOK_SECRET" });
+  if (config.providers.video === "tavus" && !config.tavus.webhookSecret) out.push({ key: "TAVUS_WEBHOOK_SECRET", problem: "Tavus callbacks enabled without a verification token", fix: "set TAVUS_WEBHOOK_SECRET" });
+  if (config.providers.outreach === "resend" && !config.resend.webhookSecret) out.push({ key: "RESEND_WEBHOOK_SECRET", problem: "Resend delivery events enabled without signature verification", fix: "set RESEND_WEBHOOK_SECRET (whsec_...)" });
+  if (config.calendly.url && !config.calendly.signingKey) out.push({ key: "CALENDLY_WEBHOOK_SIGNING_KEY", problem: "Calendly bookings enabled without signature verification", fix: "set CALENDLY_WEBHOOK_SIGNING_KEY" });
+  if (["test"].includes(config.providers.outreach) || config.providers.alerts === "test" || config.providers.dialer === "test") out.push({ key: "PROVIDERS", problem: "test adapters selected in live mode", fix: "select real providers" });
+  return out;
+}
 
 export function hasLlm(): boolean {
   return Boolean(config.llm.apiKey);

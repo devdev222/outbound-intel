@@ -1,44 +1,51 @@
 import Link from "next/link";
-import { QueueCard } from "@/components/bdr/QueueCard";
-import { EmptyState, PageHeader } from "@/components/ui";
+import { QueueRow } from "@/components/bdr/QueueRow";
+import { LoadDemoWorkspace } from "@/components/bdr/LoadDemoWorkspace";
+import { EmptyState, PageHeader, Tabs } from "@/components/ui";
 import { requireRole } from "@/lib/auth";
-import { buildWorkQueue, type QueueItem } from "@/lib/engine/workqueue";
+import { config } from "@/lib/config";
+import { buildWorkQueue, CATEGORY_LABEL, CATEGORY_ORDER, type QueueCategory } from "@/lib/engine/workqueue";
+import { getProviders } from "@/lib/providers";
 import { getStore } from "@/lib/store";
 import { reps as repCol } from "@/lib/store/collections";
-import type { OutreachTouch } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-export default async function WorkPage({ searchParams }: { searchParams: Promise<{ rep?: string }> }) {
+type View = QueueCategory | "all";
+const VIEWS: View[] = ["all", ...CATEGORY_ORDER];
+
+const EMPTY: Record<View, string> = {
+  all: "Nothing needs you right now.",
+  now: "No one is ready to call right now.",
+  meetings: "No meetings to prepare or schedule.",
+  follow_ups: "No follow-ups due today.",
+  needs_attention: "Nothing needs attention. Deliveries, enrichment and launches are healthy.",
+};
+
+export default async function WorkPage({ searchParams }: { searchParams: Promise<{ rep?: string; view?: string }> }) {
   const user = await requireRole(["bdr", "exec", "admin"]);
-  const { rep } = await searchParams;
+  const sp = await searchParams;
+  const view: View = VIEWS.includes(sp.view as View) ? (sp.view as View) : "all";
   const store = getStore();
   const reps = await repCol.list();
   const manager = user.role !== "bdr";
-  const repId = manager ? (rep === "all" ? null : rep ?? reps[0]?.id ?? null) : (user.repId ?? null);
-  const [queue, tasks] = await Promise.all([buildWorkQueue(store, repId), store.listOutreach({ status: "awaiting_rep", limit: 500 })]);
-  const taskByAccount = new Map<string, OutreachTouch>();
-  for (const t of tasks) if (!taskByAccount.has(t.accountId)) taskByAccount.set(t.accountId, t);
+  const repId = manager ? (sp.rep === "all" ? null : (sp.rep ?? reps[0]?.id ?? null)) : (user.repId ?? null);
+  const queue = await buildWorkQueue(store, getProviders(), repId);
+  const items = view === "all" ? queue.items : queue.items.filter((i) => i.category === view);
   const repName = repId ? (reps.find((r) => r.id === repId)?.name ?? repId) : "the whole team";
-  const total = Object.values(queue.counts).reduce((a, b) => a + b, 0);
-
-  const sections: { key: keyof typeof queue.counts; title: string; blurb: string; items: QueueItem[]; variant?: "default" | "exception" | "meeting"; empty: string }[] = [
-    { key: "highIntent", title: "High-intent engagement", blurb: "Prospects who just engaged with their page. Call while it is warm.", items: queue.highIntent, empty: "No one is engaging right now." },
-    { key: "callsReady", title: "Calls ready", blurb: "Fully prepared accounts: verified contact, live signal, opener and proof.", items: queue.callsReady, empty: "Nothing waiting. The team is preparing the next accounts." },
-    { key: "followUps", title: "Follow-ups requiring attention", blurb: "Drafts to approve, LinkedIn or InMail touches to send, waits that are due.", items: queue.followUps, empty: "No follow-ups due." },
-    { key: "meetings", title: "Meetings requiring action", blurb: "Booked meetings to prepare for.", items: queue.meetings, variant: "meeting", empty: "No meetings on the books yet." },
-    { key: "exceptions", title: "Exceptions requiring review", blurb: "Accounts the engine could not finish preparing, or that need a human call.", items: queue.exceptions, variant: "exception", empty: "No exceptions. Everything in the queue passed readiness." },
-  ];
+  const repParam = manager ? (repId ?? "all") : undefined;
+  const accountsTotal = (await store.listAccounts()).length;
 
   return (
     <div className="page">
       <PageHeader
         eyebrow="BDR workspace"
         title="Today"
-        description={`${total} items prepared for ${repName}. Every card has the contact, the reason, the opener and the proof; start with the top of each list.`}
+        description={`${queue.counts.all} account${queue.counts.all === 1 ? "" : "s"} need${queue.counts.all === 1 ? "s" : ""} ${repName === "the whole team" ? "the team" : repName} today, most important first.${queue.paused ? ` ${queue.paused} paused account${queue.paused === 1 ? " is" : "s are"} hidden until their pause ends.` : ""}`}
         actions={
           manager ? (
             <form className="flex items-center gap-2" action="/work">
+              <input type="hidden" name="view" value={view} />
               <label className="text-[12px] text-[var(--muted)]" htmlFor="rep">
                 Rep
               </label>
@@ -58,47 +65,37 @@ export default async function WorkPage({ searchParams }: { searchParams: Promise
         }
       />
 
-      <nav className="mb-5 flex flex-wrap gap-2 text-[12.5px]">
-        {sections.map((s) => (
-          <a key={s.key} href={`#${s.key}`} className="pill">
-            {s.title} <span className="font-semibold">{queue.counts[s.key]}</span>
-          </a>
-        ))}
-      </nav>
+      <Tabs
+        base="/work"
+        param="view"
+        current={view}
+        keep={{ rep: repParam }}
+        tabs={VIEWS.map((v) => ({ key: v, label: v === "all" ? "All" : CATEGORY_LABEL[v], count: v === "all" ? queue.counts.all : queue.counts[v] }))}
+      />
 
-      {total === 0 && (
+      {accountsTotal === 0 ? (
         <EmptyState
-          title="Nothing to work yet"
-          body="The agent team has not produced rep-ready accounts for this queue. Check the Accounts page for what is in enrichment, or seed demo data from the console."
+          title="No accounts yet"
+          body={config.mode === "live" ? "Import accounts from Clay or the CRM on the Integrations page; the agent team prepares them from there." : "This workspace is empty. Load the demo workspace to see the agent team prepare accounts, or connect an account source."}
+          action={config.mode !== "live" && user.role === "admin" ? <LoadDemoWorkspace /> : <Link href="/console/integrations" className="btn">Integrations</Link>}
+        />
+      ) : items.length === 0 ? (
+        <EmptyState
+          title={EMPTY[view]}
+          body={view === "all" ? "The agent team is preparing the next accounts. Accounts still missing information are on the Accounts page." : undefined}
           action={
             <Link href="/accounts?view=enrichment" className="btn">
               See accounts in enrichment
             </Link>
           }
         />
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => (
+            <QueueRow key={item.accountId} item={item} />
+          ))}
+        </div>
       )}
-
-      <div className="space-y-8">
-        {sections.map((s) => (
-          <section key={s.key} id={s.key}>
-            <div className="mb-2 flex items-baseline justify-between gap-3">
-              <h2 className="section-title mb-0">
-                {s.title} <span className="ml-1 text-[13px] font-normal text-[var(--muted)]">{s.items.length}</span>
-              </h2>
-              <span className="hidden text-[12px] text-[var(--muted)] sm:inline">{s.blurb}</span>
-            </div>
-            {s.items.length === 0 ? (
-              <div className="card px-4 py-5 text-[13px] text-[var(--muted)]">{s.empty}</div>
-            ) : (
-              <div className="space-y-3">
-                {s.items.map((item) => (
-                  <QueueCard key={`${s.key}-${item.accountId}`} item={item} variant={s.variant} task={s.key === "followUps" ? taskByAccount.get(item.accountId) ?? null : null} />
-                ))}
-              </div>
-            )}
-          </section>
-        ))}
-      </div>
     </div>
   );
 }

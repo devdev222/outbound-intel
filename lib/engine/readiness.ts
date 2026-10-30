@@ -1,6 +1,7 @@
 import type { Store } from "@/lib/store";
 import { isSuppressed, reps as repCol } from "@/lib/store/collections";
-import type { Account, AutomationSettings, NextAction, ReadinessCheck, ReadinessReport, Rep, ScoringModel } from "@/lib/types";
+import type { Account, AutomationSettings, NextAction, OutreachChannel, ReadinessCheck, ReadinessReport, Rep, ScoringModel, Task } from "@/lib/types";
+import { MAX_ENRICHMENT_ATTEMPTS } from "./enrichment";
 import { nowIso } from "@/lib/util";
 import { icpScore } from "./scoring";
 
@@ -17,6 +18,8 @@ export interface ReadinessContext {
   settings: AutomationSettings;
   crmOwner: string | null;
   suppressed: boolean;
+  /** Live mode: synthetic (mock) contact data never counts as usable. */
+  live?: boolean;
 }
 
 export function daysSince(iso: string): number {
@@ -37,12 +40,13 @@ export function evaluateReadiness(account: Account, ctx: ReadinessContext): Read
     pass: Boolean(c && (c.seniority === "vp" || c.seniority === "director" || c.seniority === "c_level" || c.seniority === "manager")),
     detail: c ? `${c.name}, ${c.title}` : "no contact selected",
   });
-  const usableContact = Boolean(c && (c.email || (c.phone && c.phoneVerified) || c.linkedin));
+  const synthetic = Boolean(ctx.live && c?.verifiedBy === "synthetic");
+  const usableContact = !synthetic && Boolean(c && (c.email || (c.phone && c.phoneVerified) || c.linkedin));
   checks.push({
     key: "contact",
     label: "Usable contact information",
     pass: usableContact,
-    detail: c ? [c.email ? "email" : null, c.phone ? (c.phoneVerified ? "verified phone" : "unverified phone") : null, c.linkedin ? "LinkedIn" : null].filter(Boolean).join(", ") || "no channel on file" : "no contact",
+    detail: synthetic ? "contact data is synthetic (mock enrichment); verify with a real provider" : c ? [c.email ? "email" : null, c.phone ? (c.phoneVerified ? "verified phone" : "unverified phone") : null, c.linkedin ? "LinkedIn" : null].filter(Boolean).join(", ") || "no channel on file" : "no contact",
   });
   const fresh = account.signals.filter((s) => s.status === "verified" && s.type !== "intent" && s.evidence.some((e) => e.url) && daysSince(s.detectedAt) <= ctx.settings.signalFreshnessDays);
   const stale = account.signals.filter((s) => s.status === "verified" && s.type !== "intent" && daysSince(s.detectedAt) > ctx.settings.signalFreshnessDays).length;
@@ -58,6 +62,16 @@ export function evaluateReadiness(account: Account, ctx: ReadinessContext): Read
     pass: Boolean(account.painHypothesis && account.messagingAngle),
     detail: account.painHypothesis ? `pain: ${account.painHypothesis}` : "no pain hypothesis / angle yet",
   });
+  const e = account.enrichment;
+  if (e?.lastError) {
+    const exhausted = e.attempts >= MAX_ENRICHMENT_ATTEMPTS || !e.nextAttemptAt;
+    checks.push({
+      key: "enrichment",
+      label: "Contact enrichment",
+      pass: false,
+      detail: `${e.lastError}${exhausted ? "; automatic retries stopped, fix the provider or enrich manually" : `; retry ${e.attempts}/${MAX_ENRICHMENT_ATTEMPTS} at ${e.nextAttemptAt?.slice(0, 16).replace("T", " ")}`}`,
+    });
+  }
   checks.push({ key: "crm", label: "CRM ownership", pass: !ctx.crmOwner, detail: ctx.crmOwner ? `owned by ${ctx.crmOwner} in the CRM` : "unowned in the CRM" });
   checks.push({ key: "suppression", label: "Not suppressed", pass: !ctx.suppressed, detail: ctx.suppressed ? "contact or domain is on the suppression list" : "no suppression match" });
 
@@ -67,16 +81,33 @@ export function evaluateReadiness(account: Account, ctx: ReadinessContext): Read
   return { ready, checks, blockers, evaluatedAt: nowIso() };
 }
 
-export function nextActionFor(account: Account, report: ReadinessReport): NextAction {
+const ACTION_FOR_CHANNEL: Partial<Record<OutreachChannel, NextAction["type"]>> = { call: "call", meeting: "meeting_prep", email: "email", estimate: "email", linkedin: "linkedin", inmail: "linkedin" };
+
+/**
+ * Recommended next action. Precedence: closed > paused (wait until the pause
+ * ends) > a person's committed task (callback, meeting, prospect request: its
+ * due date is kept exactly) > readiness-derived recommendation. Rescoring can
+ * therefore never move a callback the rep agreed with the prospect.
+ */
+export function nextActionFor(account: Account, report: ReadinessReport, committed: Task[] = []): NextAction {
   const now = Date.now();
   const inDays = (d: number) => new Date(now + d * 86_400_000).toISOString();
   if (["won", "lost", "disqualified"].includes(account.status)) return { type: "close", label: "Closed", reason: `account is ${account.status}`, dueAt: nowIso() };
+  if (account.pausedUntil && account.pausedUntil > nowIso()) {
+    return { type: "wait", label: `Paused until ${account.pausedUntil.slice(0, 10)}`, reason: account.pauseReason ?? "outreach deferred", dueAt: account.pausedUntil };
+  }
+  const commitment = [...committed].sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor))[0];
+  if (commitment) {
+    return { type: ACTION_FOR_CHANNEL[commitment.channel] ?? "review", label: commitment.title ?? `${commitment.channel} task`, reason: commitment.source === "prospect" ? "the prospect asked for this" : "committed by the rep", dueAt: commitment.scheduledFor };
+  }
   if (account.status === "meeting_booked") return { type: "meeting_prep", label: "Prepare for the meeting", reason: "meeting booked; review signals and the assessment before the call", dueAt: inDays(1) };
   if (!report.ready) {
     const blocker = report.blockers[0] ?? "missing information";
     if (report.checks.find((c) => c.key === "suppression" && !c.pass) || report.checks.find((c) => c.key === "crm" && !c.pass)) {
       return { type: "review", label: "Review ownership / suppression", reason: blocker, dueAt: inDays(1) };
     }
+    const enrich = report.checks.find((c) => c.key === "enrichment" && !c.pass);
+    if (enrich) return { type: "enrich", label: "Enrichment failed", reason: `${enrich.detail}`, dueAt: account.enrichment?.nextAttemptAt ?? nowIso() };
     return { type: "enrich", label: "Back to enrichment", reason: blocker, dueAt: inDays(2) };
   }
   if (account.pendingActivation || account.status === "hot") return { type: "call", label: "Call now", reason: account.pendingActivation ?? "high-intent engagement", dueAt: nowIso() };
@@ -101,5 +132,5 @@ export async function readinessContextFor(store: Store, account: Account, model:
   const suppressed = Boolean(await isSuppressed(account.contact?.email, account.domain));
   const crmOwner = account.crmOwner ?? (crmOwnerLookup ? await crmOwnerLookup(account) : null);
   void store;
-  return { model, settings, crmOwner, suppressed };
+  return { model, settings, crmOwner, suppressed, live: process.env.APP_MODE === "live" };
 }

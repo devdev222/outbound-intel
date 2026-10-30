@@ -48,6 +48,8 @@ export interface EnrichmentResult {
   /** false when the provider works asynchronously and will call back later. */
   complete: boolean;
   provider: string;
+  /** "synthetic" for the mock provider; readiness never accepts synthetic contacts in live mode. */
+  provenance?: "provider" | "synthetic";
 }
 
 export interface EnrichmentProvider {
@@ -87,6 +89,14 @@ export interface SendResult {
   status: "sent" | "failed";
   externalId?: string;
   note?: string;
+  /** For failures: false when retrying cannot help (bad address, suppressed, invalid payload). */
+  retryable?: boolean;
+}
+
+export interface LaunchResult {
+  /** Remote sequence id; persisted on the campaign and used for adapt / pause / resume. */
+  sequenceId: string | null;
+  touches: OutreachTouch[];
 }
 
 export interface OutreachProvider {
@@ -100,19 +110,25 @@ export interface OutreachProvider {
    * touch when it is due.
    */
   readonly ownsScheduling: boolean;
-  /** Register a sequence. Providers that own scheduling return touches with external ids; others return them unchanged. */
-  launchSequence(account: Account, touches: OutreachTouch[]): Promise<OutreachTouch[]>;
-  /** Send one due touch now (only for channels in `channels`). */
-  sendTouch(account: Account, touch: OutreachTouch): Promise<SendResult>;
+  /**
+   * Register a sequence. Must throw on failure (the campaign then stays pending/failed,
+   * never live). `idempotencyKey` is stable across retries of the same launch.
+   */
+  launchSequence(account: Account, touches: OutreachTouch[], idempotencyKey: string): Promise<LaunchResult>;
+  /** Send one due touch now (only for channels in `channels`). Same key on every retry of this touch. */
+  sendTouch(account: Account, touch: OutreachTouch, idempotencyKey: string): Promise<SendResult>;
   /** Adapt the remaining touches after an engagement signal (providers that own scheduling). */
   adaptSequence(account: Account, reason: string): Promise<{ adapted: boolean; note: string }>;
+  /** Stop all sends for the account until `until` (providers that own scheduling). */
+  pauseSequence?(account: Account, until: string, reason: string, idempotencyKey: string): Promise<void>;
+  resumeSequence?(account: Account, idempotencyKey: string): Promise<void>;
 }
 
 // Dialer ---------------------------------------------------------------------
 
 export interface DialerProvider {
   readonly name: string;
-  queueCall(input: { account: Account; contact: Person; context: string }): Promise<{ queued: boolean; externalId?: string; note: string }>;
+  queueCall(input: { account: Account; contact: Person; context: string; idempotencyKey: string }): Promise<{ queued: boolean; externalId?: string; note: string }>;
 }
 
 // Analytics ------------------------------------------------------------------
@@ -133,7 +149,7 @@ export interface AnalyticsProvider {
 
 export interface AlertProvider {
   readonly name: string;
-  sendHotLead(alert: HotLeadAlert): Promise<{ delivered: boolean; via: string; note?: string }>;
+  sendHotLead(alert: HotLeadAlert, idempotencyKey?: string): Promise<{ delivered: boolean; via: string; note?: string; remoteId?: string }>;
 }
 
 // CRM ------------------------------------------------------------------------

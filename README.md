@@ -75,15 +75,19 @@ In the dashboard: **Seed demo data**, then open any account, run the **hot-lead 
 
 Other scripts: `npm run seed [count]`, `npm run learn`, `npm run score`, `npm run reset`, `npm run worker` (24/7 loop), `npm run mcp` (MCP server).
 
+Verification: `npm test` (isolated test suite), `npm run smoke` (HTTP checks against a production build in a separate, credential-free process), `npm run check` (configuration and schema readiness for the current environment), `npm run verify` (typecheck, tests, build, smoke). See **Testing and release checks** below.
+
 Without `ANTHROPIC_API_KEY` every agent uses a deterministic template path, so the demo is complete either way; with the key, explanations, briefs, playbooks, copy and talk tracks are written by Claude (Opus 5.5 by default, structured outputs, cached prompts, server-side refusal fallbacks).
 
 ## Outreach, rep tasks and the video
 
-- **Email** is sent by the engine's scheduler when each touch is due, through the active provider: mock (nothing leaves), Resend (real delivery with opens and clicks flowing back through `/api/webhooks/resend`), or Cartage Sequencer (owns the whole cadence).
-- **LinkedIn, InMail and gifts** have no sending API, so when the Sequencer is not active those touches become **rep tasks**: the drafted message, a deep link and Mark sent / Skip buttons on the account page and on the Alerts page. Marking a task sent records it as engagement.
-- **Estimate requests** from the personalized page ("Send me my estimate") become a rep task with the prospect's inputs and results attached.
+- **One task lifecycle.** Every touch is a task: `awaiting_approval` → `scheduled` → `sending` → `sent`, or `manual` (a person does it), `skipped`, `failed`. The buttons say what they do: **Review & approve** schedules and never sends; **Send email** asks the provider and the task is sent only when the provider acknowledges; **Mark manually sent** records work done outside the platform. Commitments a person made (callbacks, meeting prep, prospect requests) are separate from agent recommendations and keep their due dates through rescoring.
+- **Email** goes through the active provider: mock (nothing leaves), Resend (real delivery with idempotency keys; opens and clicks flow back through `/api/webhooks/resend`), or Cartage Sequencer (owns the cadence). Every external call runs as a durable operation with a stable idempotency key, an atomic claim (two workers never both send) and bounded retries.
+- **LinkedIn, InMail and gifts** have no sending API, so when the Sequencer is not active they become **manual tasks** with the drafted message and a deep link.
+- **Pauses.** "Not now" on a call, or **Pause outreach** on the account page, sets `pausedUntil`. While paused the scheduler holds every task, the dialer is not called, and a Sequencer that owns scheduling is told to pause (retried until it confirms).
+- **Prospect requests** from the personalized page go to validated endpoints that need the page token: "Send me times" records `meeting_requested` with a scheduling task (a booking is `meeting_booked` only once confirmed), and "Send me my estimate" creates an approval task. The page shows success only after the server acknowledges and retries transient failures with the same request id.
 - **Video**: the Video Agent writes hook / proof / ask beats and the script from every other agent's output. The AI arm renders through Tavus (mock player until a key exists); the rep arm issues a recording brief and the rep attaches the clip on the account page. The video is embedded on the account page and on the prospect page at `#video`.
-- **Integrations page** (`/integrations`): every connection with its status, the variables that drive it, the vendor-side steps, and a test button that makes the smallest real call.
+- **Integrations page** (`/console/integrations`): organised by capability (Import accounts → Verify contacts → Prepare content → Deliver outreach → Sync outcomes). Each connection names the active provider and transport and shows Mock, Not configured, Configured, Verified or Degraded, with last success, last error and the next action. Credentials alone are only Configured; a passing test or a real successful call against that provider makes it Verified, and a later failure makes it Degraded. Tests with real side effects (a Slack post, a real email, a Clay row) ask for confirmation.
 
 ## Running 24/7
 
@@ -97,12 +101,27 @@ The Agents page shows each agent's cadence, last run, totals, the run log, and l
 
 - `STORE_PROVIDER=file` (default) keeps JSON under `.data/`; zero setup.
 - `STORE_PROVIDER=memory` keeps everything in process memory. With `AUTO_SEED=true` each server instance seeds the deterministic synthetic dataset on boot, which is how the hosted demo runs. Data resets on cold starts and is not shared between instances, so treat it as a tour, not a system of record.
-- `STORE_PROVIDER=supabase` uses the schema in `supabase/migrations/0001_init.sql` through the server-only secret key; RLS is on with no policies, so the browser never reaches the database.
+- `STORE_PROVIDER=supabase` uses the server-only secret key; RLS is on with no policies, so the browser never reaches the database. Apply **every** migration, in order:
+
+  ```bash
+  psql "$DATABASE_URL" -f supabase/migrations/0001_init.sql
+  psql "$DATABASE_URL" -f supabase/migrations/0002_activity_and_rep_tasks.sql
+  psql "$DATABASE_URL" -f supabase/migrations/0003_documents_and_platform.sql
+  psql "$DATABASE_URL" -f supabase/migrations/0004_reliability.sql
+  ```
+
+  (or paste them in that order into the Supabase SQL editor). `0004` adds the account fields the app relies on (owner, readiness, next action, experiments, pipeline value, CRM owner, pause, enrichment state), task lifecycle columns, alert deliveries, opportunity ids, the `operations` table and `app_meta.schema_version`. `npm run check` and `GET /api/health` refuse to report ready until the schema version matches.
 
 ## Deploying
 
 - **Hosted demo (ephemeral):** `vercel deploy --prod` from the repo root. On Vercel the defaults switch to the memory store with auto-seed, and the public URL is taken from Vercel's system environment, so no variables are required. Add `ANTHROPIC_API_KEY` in the project settings to get Claude-written content.
-- **Real deployment:** set `STORE_PROVIDER=supabase` with the Supabase URL and secret key, `NEXT_PUBLIC_APP_URL`, `CRON_SECRET`, and the provider variables from `.env.example`; run `npm run worker` on a long-running host (or a per-minute cron on `/api/agents/tick`) so the team runs around the clock.
+- **Real deployment:** set `APP_MODE=live`, `STORE_PROVIDER=supabase` with the Supabase URL and secret key (and all four migrations applied), `AUTH_SECRET` (32+ characters), `CRON_SECRET`, `NEXT_PUBLIC_APP_URL`, a real `ENRICHMENT_PROVIDER`, and every callback secret for the providers you enable (Clay, Tavus, Resend, Calendly). Run `npm run check` until it reports ready. Live mode turns off demo seed/reset and simulation, refuses unsigned callbacks, never treats mock enrichment as verified, cites only approved customer proof, and signs unsubscribe links per recipient. Run `npm run worker` on a long-running host (or a per-minute cron on `/api/agents/tick` with the `CRON_SECRET` bearer) so the team runs around the clock.
+
+## Testing and release checks
+
+- `npm test` runs the suite with `test/setup.ts` preloaded before any app module: in-memory store, controllable test adapters, every credential removed and a network guard that blocks non-local requests. Tests cover store round trips, approval vs delivery, pause through rescoring, duplicate workers, provider failures and bounded retries, per-destination alert/dialer delivery, prospect requests, opportunity counting, integration status, Jerry-over-MCP recovery, and the full journey (import → enrich → qualify → assign → approve → deliver → activate → conversation → pause → resume → meeting request → confirmed meeting → outcome sync), clean and with timeouts plus two racing workers.
+- `npm run smoke` starts the production build in a separate process with a minimal environment (memory store, test adapters, credentials blanked) and checks the permission boundaries and public contracts over HTTP.
+- `SUPABASE_TEST_URL=... SUPABASE_TEST_KEY=... npm test` adds the Supabase store contract test, and `npm run journey` runs the full journey on that test project. Use a dedicated test project: neither command resets data, but both write to it.
 
 ## How scoring and learning work
 
