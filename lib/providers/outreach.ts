@@ -91,6 +91,7 @@ export class ResendOutreachProvider implements OutreachProvider {
             { name: "account_slug", value: tagSafe(account.slug) },
             { name: "touch_id", value: tagSafe(touch.id) },
             { name: "step", value: String(touch.step) },
+            ...(touch.contactId ? [{ name: "contact_id", value: tagSafe(touch.contactId) }] : []),
           ],
         },
       });
@@ -115,7 +116,8 @@ const SequencerLaunchResponse = z.object({
 /**
  * Proposed contract, to be replaced by the real API shape once provided:
  *   POST {SEQUENCER_API_URL}/sequences            (Idempotency-Key: launch:<accountId>)
- *     { account, contact, touches: [{step, channel, subject?, body, scheduled_for}], experiment }
+ *     { account, contact, touches: [{step, channel, subject?, body, scheduled_for, contact_id}], experiment }
+ *     (one launch per person in a buying group; `contact` is that person, contact_id is stable)
  *     -> { sequence_id, touches: [{step, external_id, status}] }
  *   POST {SEQUENCER_API_URL}/sequences/{sequence_id}/adapt  { reason }
  *   POST {SEQUENCER_API_URL}/sequences/{sequence_id}/pause  { until, reason }
@@ -143,7 +145,7 @@ export class CartageSequencerProvider implements OutreachProvider {
         body: {
           account: { slug: account.slug, company: account.companyName, domain: account.domain },
           contact: account.contact,
-          touches: touches.filter((t) => this.channels.includes(t.channel)).map((t) => ({ step: t.step, channel: t.channel, subject: t.subject, body: t.body, scheduled_for: t.scheduledFor })),
+          touches: touches.filter((t) => this.channels.includes(t.channel)).map((t) => ({ step: t.step, channel: t.channel, subject: t.subject, body: t.body, scheduled_for: t.scheduledFor, contact_id: t.contactId ?? null })),
           experiment: account.campaign?.arms ?? null,
           paused_until: account.pausedUntil ?? null,
         },

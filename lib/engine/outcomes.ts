@@ -1,6 +1,6 @@
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
-import type { Account, HistoricalRecord, Outcome, OutcomeType } from "@/lib/types";
+import type { Account, HistoricalContact, HistoricalRecord, Outcome, OutcomeType } from "@/lib/types";
 import { nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
 import { syncOutcomeToCrm } from "./crm-sync";
@@ -56,6 +56,8 @@ export interface RecordOutcomeInput {
   source?: string;
   /** CRM opportunity id when known; defaults to one opportunity per account. */
   opportunityId?: string | null;
+  /** The buying-group contact the outcome belongs to (defaults to the primary contact). */
+  contactId?: string | null;
 }
 
 const OPPORTUNITY_TYPES: OutcomeType[] = ["opportunity_created", "deal_won", "deal_lost"];
@@ -66,6 +68,25 @@ const RANK: Partial<Record<Account["status"], number>> = { engaged: 1, hot: 1, m
 /** Training-history stage order; higher never gets overwritten by lower. */
 export function historyRank(o: HistoricalRecord["outcome"]): number {
   return o === "won" || o === "lost" ? 3 : o === "meeting" ? 2 : o === "no_response" ? 1 : 0;
+}
+
+/**
+ * The buying group as the learning loop sees it: who was contacted, in what
+ * order, and who actually helped the deal progress (replied, met, or was
+ * credited on an outcome), kept apart.
+ */
+export async function historicalContactsFor(store: Store, accountId: string, outcome: HistoricalRecord["outcome"]): Promise<HistoricalContact[] | undefined> {
+  const people = (await store.listContacts({ accountId })).filter((c) => c.status !== "candidate" || c.outreach.touchesSent > 0);
+  if (!people.length) return undefined;
+  const credited = new Set((await store.listOutcomes({ accountId })).map((o) => o.contactId).filter(Boolean) as string[]);
+  const contacted = people.filter((c) => c.outreach.touchesSent > 0 || c.engagement.replied || c.engagement.meeting).sort((a, b) => (a.outreach.lastTouchAt ?? "").localeCompare(b.outreach.lastTouchAt ?? "") || (a.outreach.order ?? 99) - (b.outreach.order ?? 99));
+  return people
+    .filter((c) => !["rejected", "replaced"].includes(c.status))
+    .map((c) => {
+      const influenced = c.engagement.replied || c.engagement.meeting || credited.has(c.id);
+      const order = contacted.findIndex((x) => x.id === c.id);
+      return { role: c.role, title: c.person.title, seniority: c.person.seniority, contactedOrder: order >= 0 ? order + 1 : null, replied: c.engagement.replied, influenced, bookedMeeting: c.engagement.meeting, inWin: outcome === "won" && influenced };
+    });
 }
 
 export function defaultOpportunityId(accountId: string): string {
@@ -87,6 +108,7 @@ export async function recordOutcome(
     source: input.source ?? "api",
     createdAt: nowIso(),
     opportunityId: OPPORTUNITY_TYPES.includes(input.outcomeType) ? (input.opportunityId ?? defaultOpportunityId(account.id)) : null,
+    contactId: input.contactId ?? account.primaryContactId ?? null,
   };
   await store.insertOutcome(outcome);
 
@@ -99,7 +121,7 @@ export async function recordOutcome(
     // One record per account. A late or out-of-order outcome never regresses it:
     // a "meeting" arriving after "won" is ignored; equal stages keep the newest.
     const existing = await store.getHistorical(`loop_${account.id}`);
-    const next = accountToHistorical(account, histOutcome, input.value ?? existing?.dealValue ?? null);
+    const next = { ...accountToHistorical(account, histOutcome, input.value ?? existing?.dealValue ?? null), contacts: await historicalContactsFor(store, account.id, histOutcome) };
     if (!existing || historyRank(next.outcome) > historyRank(existing.outcome) || (historyRank(next.outcome) === historyRank(existing.outcome) && next.outcomeAt >= existing.outcomeAt)) {
       await store.upsertHistorical(next);
       fedBack = true;

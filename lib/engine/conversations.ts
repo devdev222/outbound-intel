@@ -3,12 +3,13 @@ import { config } from "@/lib/config";
 import { generateStructured } from "@/lib/llm";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
-import { conversations as convCol, getSettings } from "@/lib/store/collections";
+import { conversations as convCol, getSettings, suppressions } from "@/lib/store/collections";
 import type { Account, Conversation, ConversationChannel, ConversationOutcome, NextAction, Signal, Task, User } from "@/lib/types";
 import { nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
 import { recordOutcome } from "./outcomes";
 import { markWrongContact } from "./contact";
+import { coordinateSignal } from "./coordination";
 import { pauseAccount } from "./pause";
 import { getPlaybook, matchingObjections, playbookPrompt } from "./playbook";
 import { approveTask, createTask, providerCanSend } from "./tasks";
@@ -31,6 +32,10 @@ export interface LogConversationInput {
   pauseDays?: number;
   /** A callback time the rep agreed with the prospect; becomes a committed task. */
   callbackAt?: string;
+  /** The buying-group contact the rep spoke with (defaults to the primary contact). */
+  contactId?: string | null;
+  /** outcome "referred": the person they pointed the rep to. */
+  referral?: { name: string; title: string; email?: string | null; linkedin?: string | null } | null;
 }
 
 const Schema = z.object({
@@ -101,6 +106,18 @@ function templateIntel(account: Account, input: LogConversationInput) {
       subject: `Checking back in a month, ${account.companyName}`,
       body: `${first}, makes sense. I will check back in a few weeks. In the meantime your numbers are here: ${page}`,
     },
+    referred: {
+      summary: `${account.contact?.name ?? "The contact"} referred us to ${input.referral?.name ?? "someone else"}${input.referral?.title ? ` (${input.referral.title})` : ""}. ${input.notes.slice(0, 140)}`,
+      next: { type: "email", label: `Reach out to ${input.referral?.name ?? "the referral"}`, reason: "a warm referral inside the buying group", dueAt: nowIso() },
+      subject: `Thanks for the pointer, ${account.companyName}`,
+      body: `${first}, thanks for pointing me to ${input.referral?.name ?? "the right person"}. I will keep it short with them and mention you suggested it, unless you would rather I didn't.`,
+    },
+    opted_out: {
+      summary: `${account.contact?.name ?? "The contact"} asked not to be contacted again.`,
+      next: { type: "review", label: "Continue with the rest of the group", reason: "one person opted out; others are unaffected", dueAt: nowIso() },
+      subject: "",
+      body: "",
+    },
     wrong_contact: {
       summary: `Wrong contact; ${input.notes.slice(0, 160)}`,
       next: { type: "enrich", label: "Find the right owner", reason: "contact does not own freight coordination", dueAt: nowIso() },
@@ -112,7 +129,12 @@ function templateIntel(account: Account, input: LogConversationInput) {
   return { summary: t.summary, objections, signalKeys, followUp: { subject: t.subject, body: t.body }, nextAction: t.next };
 }
 
-export async function logConversation(store: Store, providers: Providers, account: Account, input: LogConversationInput, user: User | null): Promise<Conversation> {
+export async function logConversation(store: Store, providers: Providers, accountIn: Account, input: LogConversationInput, user: User | null): Promise<Conversation> {
+  // The person the rep spoke with. Templates, tasks, outcomes and the record are attributed to them.
+  const contact = input.contactId ? await store.getContact(input.contactId) : accountIn.primaryContactId ? await store.getContact(accountIn.primaryContactId) : null;
+  if (input.contactId && (!contact || contact.accountId !== accountIn.id)) throw new Error(`contact ${input.contactId} is not on this account`);
+  const account: Account = contact ? { ...accountIn, contact: contact.person } : accountIn;
+  const contactId = contact?.id ?? null;
   const settings = await getSettings();
   const playbook = await getPlaybook();
   const template = templateIntel(account, input);
@@ -164,7 +186,7 @@ export async function logConversation(store: Store, providers: Providers, accoun
   // Follow-up email: a task. Never sent by logging alone; approval and delivery are separate steps.
   let followUp: Task | null = null;
   // No follow-up to a person the rep just said is the wrong contact; the account goes back to research.
-  if (input.outcome !== "not_interested" && input.outcome !== "wrong_contact") {
+  if (input.outcome !== "not_interested" && input.outcome !== "wrong_contact" && input.outcome !== "opted_out") {
     const status: Task["status"] = settings.automation.requireFollowUpApproval ? "awaiting_approval" : providerCanSend(providers, "email") ? "scheduled" : "manual";
     followUp = await createTask(store, {
       account,
@@ -178,6 +200,7 @@ export async function logConversation(store: Store, providers: Providers, accoun
       source: "conversation",
       step: 90,
       conversationId,
+      contactId,
       assigneeRepId: repId,
       note: pausedUntil ? `due when the pause ends (${pausedUntil.slice(0, 10)})` : status === "awaiting_approval" ? "drafted from the conversation; review & approve to schedule" : undefined,
     });
@@ -185,7 +208,7 @@ export async function logConversation(store: Store, providers: Providers, accoun
 
   // Committed next step (callback, meeting prep): a task the rep owns. Rescoring never replaces it.
   let commitment: Task | null = null;
-  if (input.outcome !== "wrong_contact" && (input.callbackAt || intel.nextAction.type === "call" || intel.nextAction.type === "meeting_prep")) {
+  if (input.outcome !== "wrong_contact" && input.outcome !== "opted_out" && (input.callbackAt || intel.nextAction.type === "call" || intel.nextAction.type === "meeting_prep")) {
     const meeting = intel.nextAction.type === "meeting_prep";
     commitment = await createTask(store, {
       account,
@@ -196,6 +219,7 @@ export async function logConversation(store: Store, providers: Providers, accoun
       status: "manual",
       source: input.callbackAt ? "rep" : "conversation",
       conversationId,
+      contactId,
       assigneeRepId: repId,
     });
   }
@@ -212,6 +236,7 @@ export async function logConversation(store: Store, providers: Providers, accoun
     signalsExtracted: intel.signalKeys,
     followUpDraft: followUp ? intel.followUp : null,
     followUpTouchId: followUp?.id ?? null,
+    contactId,
     nextAction: intel.nextAction,
     approved: followUp ? followUp.status !== "awaiting_approval" : true,
     generatedBy: intel.generatedBy,
@@ -233,16 +258,32 @@ export async function logConversation(store: Store, providers: Providers, accoun
       const status = (input.outcome === "connected" || input.outcome === "replied") && (cur.status === "campaign_live" || cur.status === "qualified") ? "engaged" : cur.status;
       return { ...cur, signals: merged, nextAction: intel.nextAction, pendingActivation: null, status };
     })) ?? account;
-  if (input.outcome === "wrong_contact") updated = (await markWrongContact(store, providers, account.id, user?.name ?? "rep", input.notes.trim() || "rep marked the contact as wrong")) ?? updated;
+  // Buying group: what this person said is coordinated across the group. Legacy single-contact accounts keep the account-level hold.
+  const by = user?.name ?? "rep";
+  if (contact && accountIn.buyingGroup) {
+    const signal =
+      input.outcome === "wrong_contact" ? ({ kind: "wrong_contact", detail: input.notes.trim() || "rep marked the contact as wrong" } as const)
+      : input.outcome === "replied" || input.outcome === "connected" ? ({ kind: "replied", detail: intel.summary } as const)
+      : input.outcome === "meeting_booked" ? ({ kind: "meeting", detail: intel.summary } as const)
+      : input.outcome === "opted_out" ? ({ kind: "opted_out", detail: input.notes } as const)
+      : input.outcome === "referred" && input.referral?.name ? ({ kind: "referred", detail: input.notes, referral: input.referral } as const)
+      : null;
+    if (signal) await coordinateSignal(store, providers, contact.id, signal, by);
+    updated = (await store.getAccountById(account.id)) ?? updated;
+  } else if (input.outcome === "wrong_contact") updated = (await markWrongContact(store, providers, account.id, by, input.notes.trim() || "rep marked the contact as wrong")) ?? updated;
+  if (input.outcome === "opted_out" && account.contact?.email) {
+    const email = account.contact.email.toLowerCase();
+    if (!(await suppressions.list()).some((s) => s.target.toLowerCase() === email)) await suppressions.put({ id: uuid(), target: email, reason: "opt_out", note: `said on a ${input.channel}`, createdBy: by, at: now });
+  }
   if (pausedUntil) updated = (await pauseAccount(store, providers, updated, pausedUntil, `not now: ${intel.objections.join(", ") || "timing"}`, user?.name ?? "rep")).account;
 
   // Outcomes the learning loop should see. A rep-logged meeting_booked is a confirmed appointment.
   const source = user ? `rep:${user.name}` : "rep";
-  if (input.outcome === "meeting_booked") await recordOutcome(store, providers, updated, { outcomeType: "meeting_booked", notes: intel.summary, source });
-  else if (input.outcome === "not_interested") await recordOutcome(store, providers, updated, { outcomeType: "deal_lost", notes: `not interested: ${intel.objections.join(", ") || intel.summary}`, source });
-  else if (input.outcome === "replied") await recordOutcome(store, providers, updated, { outcomeType: "replied", notes: intel.summary, source });
+  if (input.outcome === "meeting_booked") await recordOutcome(store, providers, updated, { outcomeType: "meeting_booked", notes: intel.summary, source, contactId });
+  else if (input.outcome === "not_interested") await recordOutcome(store, providers, updated, { outcomeType: "deal_lost", notes: `not interested: ${intel.objections.join(", ") || intel.summary}`, source, contactId });
+  else if (input.outcome === "replied") await recordOutcome(store, providers, updated, { outcomeType: "replied", notes: intel.summary, source, contactId });
 
-  await logActivity(store, account.id, "rep", "conversation_logged", `${input.channel}: ${input.outcome.replace(/_/g, " ")} (${intel.generatedBy})`, [
+  await logActivity(store, account.id, "rep", "conversation_logged", `${input.channel}${contact ? ` with ${contact.person.name}` : ""}: ${input.outcome.replace(/_/g, " ")} (${intel.generatedBy})`, [
     intel.summary,
     intel.objections.length ? `objections: ${intel.objections.join("; ")}` : "",
     intel.signalKeys.length ? `signals confirmed: ${intel.signalKeys.join(", ")}` : "",

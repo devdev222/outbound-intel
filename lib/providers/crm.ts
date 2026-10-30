@@ -63,7 +63,8 @@ export class HttpCrmProvider implements CrmProvider {
 
   /**
    * POST {CRM_EXPORT_URL}/outcomes with an Idempotency-Key. outcome_id is the
-   * stable external id; opportunity_id groups created -> won. A 4xx other than
+   * stable external id; opportunity_id groups created -> won; contact_id is the
+   * stable buying-group person id (with their name/title/email when known). A 4xx other than
    * 408/409/429 is permanent; anything else is retried by the durable crm_sync
    * operation. Response: optional { id } (the CRM record id), validated.
    */
@@ -77,6 +78,8 @@ export class HttpCrmProvider implements CrmProvider {
           outcome_id: outcome.id,
           opportunity_id: outcome.opportunityId ?? null,
           account_id: account.id,
+          contact_id: outcome.contactId ?? null,
+          contact: account.contact ? { name: account.contact.name, title: account.contact.title, email: account.contact.email ?? null } : null,
           account_slug: account.slug,
           company: account.companyName,
           domain: account.domain,
@@ -105,7 +108,7 @@ export class TestCrmProvider extends MockCrmProvider {
   override readonly name: string = "test";
   async logOutcome(account: Account, outcome: Outcome, idempotencyKey?: string): Promise<{ remoteId?: string | null }> {
     const { testStep } = await import("./testing");
-    await testStep("crm", idempotencyKey ?? `crm:${outcome.id}`, account.id, outcome.outcomeType);
+    await testStep("crm", idempotencyKey ?? `crm:${outcome.id}`, account.id, `${outcome.outcomeType} contact=${outcome.contactId ?? "none"} email=${account.contact?.email ?? "none"}`);
     return { remoteId: `crm_${outcome.id.slice(0, 8)}` };
   }
 }

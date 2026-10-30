@@ -309,7 +309,8 @@ export const jerryAgent: AgentDefinition = {
     }
     // Readiness blockers about contact data: enrich with bounded retries; failures stay visible as blockers.
     const blocked = all
-      .filter((a) => a.status === "needs_enrichment" && a.readiness && a.readiness.checks.some((c) => (c.key === "contact" || c.key === "decision_maker") && !c.pass) && enrichmentDue(a))
+      // Buying-group accounts are verified person by person by the Contact Research Team.
+      .filter((a) => !a.buyingGroup && a.status === "needs_enrichment" && a.readiness && a.readiness.checks.some((c) => (c.key === "contact" || c.key === "decision_maker") && !c.pass) && enrichmentDue(a))
       .filter((a) => !a.enrichment?.lastSuccessAt || (a.agentRuns.scoring ?? "") > (a.enrichment.lastSuccessAt ?? ""))
       .slice(0, ctx.batchSize);
     let enriched = 0;

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isRejected, mergeContact } from "@/lib/engine/contact";
+import { newContact, resolveContact } from "@/lib/engine/buying-group";
 import { bodyKey, onceResponse } from "@/lib/engine/idempotency";
 import { tick } from "@/lib/agents/runtime";
 import { error, json, safeEqual, callbackSecretMissing } from "@/lib/api";
@@ -58,6 +59,19 @@ export async function POST(req: Request) {
     // Field-level merge with provenance: a new number is never treated as verified unless Clay
     // verified THAT number, and a different person never inherits the previous person's details.
     const verified = contact.data.phone_verified === true || contact.data.phone_verified === "true";
+    const incoming = { name: contact.data.full_name ?? undefined, title: contact.data.title ?? undefined, email: contact.data.email ?? undefined, phone: contact.data.phone ?? undefined, linkedin: contact.data.linkedin ?? undefined, phoneVerified: verified && Boolean(contact.data.phone) };
+    // Buying group: the row is one person. Known people are merged (and re-verified); new people become candidates.
+    if (account.buyingGroup) {
+      const ref = contact.data.email ?? contact.data.linkedin ?? contact.data.full_name;
+      const known = ref ? await resolveContact(store, account.id, ref) : null;
+      if (known) {
+        await store.patchContact(known.id, (c) => ({ ...c, person: mergeContact(c.person, incoming, "clay"), verification: { ...c.verification, checkedAt: null, attempts: 0, nextAttemptAt: null } }));
+      } else if (contact.data.full_name && contact.data.title && !isRejected(account, { name: contact.data.full_name, email: contact.data.email ?? undefined })) {
+        await store.upsertContact(newContact(account, { name: contact.data.full_name, title: contact.data.title, seniority: "manager", email: contact.data.email ?? undefined, phone: contact.data.phone ?? undefined, linkedin: contact.data.linkedin ?? undefined, phoneVerified: incoming.phoneVerified }, "import"));
+      }
+      await logActivity(store, account.id, "webhook", "clay_contact_enriched", `Clay returned ${known ? `details for ${known.person.name}` : `a new person: ${contact.data.full_name ?? "unnamed"}`}`, [known ? "re-verification queued" : "added as a candidate"]);
+      if (!known || known.id !== account.primaryContactId) return json({ ok: true, kind: "contact", slug: account.slug, contactId: known?.id ?? null });
+    }
     const updated =
       (await store.patchAccount(account.id, (cur) => {
         const merged = mergeContact(cur.contact, { name: contact.data.full_name ?? undefined, title: contact.data.title ?? undefined, email: contact.data.email ?? undefined, phone: contact.data.phone ?? undefined, linkedin: contact.data.linkedin ?? undefined, phoneVerified: verified && Boolean(contact.data.phone ?? cur.contact?.phone) }, "clay");

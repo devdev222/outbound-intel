@@ -7,7 +7,7 @@ Kinds: **vendor** = third-party API implemented from the vendor's public docs. *
 | Capability | Integration | Kind | Needs credentials | Needs vendor/Cartage configuration | Needs more implementation | Status |
 |---|---|---|---|---|---|---|
 | Sign-in | OIDC (Okta, Entra ID, Google Workspace, Auth0) | vendor | `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | App registration with redirect `…/api/auth/oidc/callback`; users provisioned with `npm run user:add` | Group/role claim mapping (roles come from the app's user records today) | Code + unit tests (ID-token verification). Not verified against a real IdP |
-| Storage | Supabase Postgres | vendor | `SUPABASE_SECRET_KEY` | Apply migrations 0001–0005 | None | Store contract test exists (opt-in `SUPABASE_TEST_URL`); not run against a project |
+| Storage | Supabase Postgres | vendor | `SUPABASE_SECRET_KEY` | Apply migrations 0001–0006 | None | Store contract test exists (opt-in `SUPABASE_TEST_URL`); not run against a project |
 | Import accounts | Clay discovery table | vendor | `CLAY_WEBHOOK_SECRET` | Clay table + HTTP API column posting to `/api/webhooks/clay` | Clay delivery ids for dedupe (body hash used today) | Not verified |
 | Import accounts | RB2B visitor identification | vendor | `RB2B_WEBHOOK_SECRET` | Webhook URL with token in RB2B | Event-id dedupe (body hash today) | Not verified |
 | Verify contacts | Clay enrichment table | vendor | `CLAY_ENRICHMENT_WEBHOOK_URL`, `CLAY_WEBHOOK_SECRET` | Enrichment table with phone waterfall; callback mapping | Field-level verification flags from Clay's waterfall (only `phone_verified` today) | Not verified |
@@ -16,10 +16,10 @@ Kinds: **vendor** = third-party API implemented from the vendor's public docs. *
 | Prepare content | Anthropic (Claude) | vendor | `ANTHROPIC_API_KEY` | None | None | Not verified in this environment (templates used without a key) |
 | Prepare content | Tavus video | vendor | `TAVUS_API_KEY`, `TAVUS_WEBHOOK_SECRET` | Replica (`TAVUS_REPLICA_ID`), callback URL | None | Not verified |
 | Deliver outreach | Resend email | vendor | `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET` | Verified sending domain; webhook for delivered/opened/clicked/bounced | None | Not verified; signed-webhook handling and dedupe tested locally |
-| Deliver outreach | Cartage Sequencer | bridge | `SEQUENCER_API_KEY` | Sequencer implementing launch/pause/resume/adapt | Contract confirmation; reply events via `POST /api/events` | Proposed contract |
+| Deliver outreach | Cartage Sequencer | bridge | `SEQUENCER_API_KEY` | Sequencer implementing launch/pause/resume/adapt; one launch per buying-group person (`launch:<accountId>:c:<contactId>`), `contact_id` on every touch | Contract confirmation; reply events via `POST /api/events` with `contactId` or the person's email | Proposed contract |
 | Deliver outreach | Cartage Dialer | bridge | `DIALER_API_KEY` | Dialer implementing `POST /queue` | Contract confirmation; call outcomes back via the API | Proposed contract |
 | Deliver outreach | Slack rep alerts | vendor | `SLACK_WEBHOOK_URL` or `SLACK_BOT_TOKEN` | Channel / app | None | Not verified |
-| Sync outcomes | CRM bridge (HubSpot/Salesforce behind HTTP) | bridge | `CRM_API_KEY` | Service implementing export + `POST /outcomes` with Idempotency-Key, `outcome_id`, `opportunity_id` | Native HubSpot/Salesforce adapters if no bridge is built | Proposed contract; durable sync tested with a test adapter |
+| Sync outcomes | CRM bridge (HubSpot/Salesforce behind HTTP) | bridge | `CRM_API_KEY` | Service implementing export + `POST /outcomes` with Idempotency-Key, `outcome_id`, `opportunity_id`, `contact_id` (+ the person's name/title/email) | Native HubSpot/Salesforce adapters if no bridge is built | Proposed contract; durable sync tested with a test adapter |
 | Sync outcomes | Calendly | vendor | `CALENDLY_WEBHOOK_SIGNING_KEY` | Webhook subscription for invitee.created/canceled | None | Not verified |
 | Sync outcomes | PostHog | vendor | `POSTHOG_API_KEY` | Project | None | Not verified |
 | Machine API | `/api/v1/*`, `/api/events` | builtin | `MACHINE_IDENTITIES` (token hashes + scopes) | Issue tokens to each bridge | Token rotation tooling | Tested locally (scopes, idempotency, validation) |

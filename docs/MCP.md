@@ -9,7 +9,8 @@
 - **Structured output.** Every tool declares an `outputSchema` and returns `structuredContent` (plus the same JSON as text).
 - **Annotations.** `readOnlyHint`, `destructiveHint` (e.g. `mark_wrong_contact`), `idempotentHint`, `openWorldHint` (tools that reach external systems: outcomes with CRM sync, provider events, agent runs).
 - **Idempotency.** Mutations require `idempotencyKey` (provider events use `eventId`), persisted in the `operations` table: a retry returns the first result.
-- **Pagination.** `list_accounts` and `list_tasks` return `nextCursor`.
+- **Pagination.** `list_accounts`, `list_tasks` and `list_contacts` return `nextCursor`.
+- **Buying groups.** `get_coverage`, `list_contacts` (read); `research_contacts`, `add_contact`, `replace_contact` (destructive hint: it ends that person's outreach, history kept), `set_contact_hold` (`contacts:write`); `create_contact_task` (`tasks:write`). Every contact has a stable `contactId`; pass it to `log_conversation`, `log_outcome`, `record_provider_event` and filter `list_tasks` by it.
 
 ```bash
 claude mcp add outbound-intel -e MCP_SCOPES=read -e MCP_CLIENT_NAME=claude-code -- npm --prefix <repo> run -s mcp

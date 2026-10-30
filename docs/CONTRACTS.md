@@ -198,6 +198,19 @@ Output schema:
               "string",
               "null"
             ]
+          },
+          "primaryContactId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "coverage": {
+            "description": "Buying-group coverage summary",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -214,7 +227,9 @@ Output schema:
           "paused",
           "contact",
           "nextAction",
-          "pageUrl"
+          "pageUrl",
+          "primaryContactId",
+          "coverage"
         ],
         "additionalProperties": false
       }
@@ -372,6 +387,19 @@ Output schema:
               "string",
               "null"
             ]
+          },
+          "primaryContactId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "coverage": {
+            "description": "Buying-group coverage summary",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -388,7 +416,9 @@ Output schema:
           "paused",
           "contact",
           "nextAction",
-          "pageUrl"
+          "pageUrl",
+          "primaryContactId",
+          "coverage"
         ],
         "additionalProperties": false
       }
@@ -544,6 +574,19 @@ Output schema:
             "string",
             "null"
           ]
+        },
+        "primaryContactId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "coverage": {
+          "description": "Buying-group coverage summary",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -560,7 +603,9 @@ Output schema:
         "paused",
         "contact",
         "nextAction",
-        "pageUrl"
+        "pageUrl",
+        "primaryContactId",
+        "coverage"
       ],
       "additionalProperties": false
     },
@@ -700,6 +745,12 @@ Output schema:
           "accountId": {
             "type": "string"
           },
+          "contactId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "channel": {
             "type": "string"
           },
@@ -749,6 +800,7 @@ Output schema:
         "required": [
           "taskId",
           "accountId",
+          "contactId",
           "channel",
           "status",
           "title",
@@ -846,6 +898,11 @@ Input schema:
       "type": "string",
       "maxLength": 64
     },
+    "contactId": {
+      "description": "Only this buying-group person's tasks",
+      "type": "string",
+      "maxLength": 200
+    },
     "assigneeRepId": {
       "type": "string",
       "maxLength": 64
@@ -890,6 +947,12 @@ Output schema:
           },
           "accountId": {
             "type": "string"
+          },
+          "contactId": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "channel": {
             "type": "string"
@@ -940,6 +1003,7 @@ Output schema:
         "required": [
           "taskId",
           "accountId",
+          "contactId",
           "channel",
           "status",
           "title",
@@ -1032,6 +1096,12 @@ Output schema:
         "accountId": {
           "type": "string"
         },
+        "contactId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "channel": {
           "type": "string"
         },
@@ -1081,6 +1151,7 @@ Output schema:
       "required": [
         "taskId",
         "accountId",
+        "contactId",
         "channel",
         "status",
         "title",
@@ -1157,8 +1228,13 @@ Input schema:
       "additionalProperties": {}
     },
     "personRef": {
+      "description": "Email or LinkedIn URL of the person; used to attribute the event when contactId is absent",
       "type": "string",
       "maxLength": 300
+    },
+    "contactId": {
+      "type": "string",
+      "maxLength": 200
     }
   },
   "required": [
@@ -1178,6 +1254,13 @@ Output schema:
     "accountId": {
       "type": "string"
     },
+    "contactId": {
+      "description": "The person the event was attributed to",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "engagementScore": {
       "type": "number"
     },
@@ -1187,6 +1270,7 @@ Output schema:
   },
   "required": [
     "accountId",
+    "contactId",
     "engagementScore",
     "activationTriggered"
   ],
@@ -1247,6 +1331,11 @@ Input schema:
       "minLength": 1,
       "maxLength": 120
     },
+    "contactId": {
+      "description": "The buying-group person; defaults to the primary contact",
+      "type": "string",
+      "maxLength": 200
+    },
     "idempotencyKey": {
       "type": "string",
       "minLength": 8,
@@ -1274,6 +1363,12 @@ Output schema:
     "accountId": {
       "type": "string"
     },
+    "contactId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "opportunityId": {
       "type": [
         "string",
@@ -1290,6 +1385,7 @@ Output schema:
   "required": [
     "outcomeId",
     "accountId",
+    "contactId",
     "opportunityId",
     "status",
     "fedBackToHistory"
@@ -1300,7 +1396,7 @@ Output schema:
 
 ### `log_conversation`
 
-Record a rep conversation; the engine summarizes it, drafts a follow-up for approval and sets the next action. wrong_contact holds outreach and reopens research.
+Record a rep conversation with one person (contactId; defaults to the primary contact). The engine summarizes it, drafts a follow-up for approval and sets the next action. In a buying group: replied/connected holds the others, meeting_booked stops the group sequence, opted_out stops only that person, wrong_contact replaces them (history kept), referred adds the referral as a candidate.
 
 - Scope: `conversations:write` · mutation
 - Retry: Retry with the same idempotencyKey; the conversation is logged once.
@@ -1344,7 +1440,9 @@ Input schema:
         "meeting_booked",
         "not_interested",
         "not_now",
-        "wrong_contact"
+        "wrong_contact",
+        "referred",
+        "opted_out"
       ]
     },
     "notes": {
@@ -1361,6 +1459,39 @@ Input schema:
       "type": "string",
       "format": "date-time",
       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "contactId": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "referral": {
+      "description": "Required for outcome referred",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "linkedin": {
+          "type": "string",
+          "maxLength": 400
+        }
+      },
+      "required": [
+        "name",
+        "title"
+      ]
     },
     "idempotencyKey": {
       "type": "string",
@@ -1386,6 +1517,12 @@ Output schema:
   "properties": {
     "conversationId": {
       "type": "string"
+    },
+    "contactId": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "summary": {
       "type": "string"
@@ -1419,6 +1556,7 @@ Output schema:
   },
   "required": [
     "conversationId",
+    "contactId",
     "summary",
     "nextAction",
     "followUpAwaitingApproval"
@@ -1429,7 +1567,7 @@ Output schema:
 
 ### `mark_wrong_contact`
 
-Remove the account's contact and its verification, hold contact-specific outreach, and send the account back to research (the person is never re-selected).
+The account's (primary) contact is the wrong person. In a buying group this replaces that person (history kept) like replace_contact; on a single-contact account it removes the contact, holds outreach and reopens research. The person is never re-selected.
 
 - Scope: `contacts:write` · mutation · destructive
 - Retry: Retry with the same idempotencyKey.
@@ -1494,6 +1632,3073 @@ Output schema:
     "accountId",
     "status",
     "heldUntilNewContact"
+  ],
+  "additionalProperties": false
+}
+```
+
+### `get_coverage`
+
+The account's buying group: the plan (roles, size, order and why), who fills each role, gaps with reasons, candidates, replaced/opted-out people (history kept) and one next action.
+
+- Scope: `read` · read-only
+- Retry: Safe to retry (read-only).
+- Errors: `not_found` when no such account
+
+Input schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "accountId": {
+      "description": "Stable account id (preferred)",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "slug": {
+      "description": "Account slug (alternative to accountId)",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "accountId": {
+      "type": "string"
+    },
+    "plan": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "targetSize": {
+              "type": "number"
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "stagger": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "default",
+                "learned"
+              ]
+            },
+            "segment": {
+              "type": "string"
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "targetSize",
+            "roles",
+            "stagger",
+            "source",
+            "segment",
+            "evidence"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "group": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "description": "Stable contact id used by tasks, events, conversations, outcomes and CRM sync"
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "linkedin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phoneVerified": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "economic_buyer",
+              "operational_owner",
+              "champion",
+              "supporting"
+            ]
+          },
+          "roleLabel": {
+            "type": "string"
+          },
+          "roleConfidence": {
+            "type": "number"
+          },
+          "roleEvidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "candidate",
+              "selected",
+              "paused",
+              "rejected",
+              "replaced",
+              "opted_out"
+            ]
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "selectedReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "employment": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "email": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "phone": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fresh": {
+                "type": "boolean"
+              },
+              "duplicateOf": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suppressed": {
+                "type": "boolean"
+              },
+              "checkedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "attempts": {
+                "type": "number"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "employment",
+              "email",
+              "phone",
+              "fresh",
+              "duplicateOf",
+              "suppressed",
+              "checkedAt",
+              "attempts",
+              "lastError"
+            ],
+            "additionalProperties": false
+          },
+          "outreach": {
+            "type": "object",
+            "properties": {
+              "order": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "startDay": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "touchesSent": {
+                "type": "number"
+              },
+              "lastTouchAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "heldReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "order",
+              "startDay",
+              "touchesSent",
+              "lastTouchAt",
+              "heldReason"
+            ],
+            "additionalProperties": false
+          },
+          "engagement": {
+            "type": "object",
+            "properties": {
+              "score": {
+                "type": "number"
+              },
+              "lastEventAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "replied": {
+                "type": "boolean"
+              },
+              "meeting": {
+                "type": "boolean"
+              },
+              "optedOut": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "score",
+              "lastEventAt",
+              "replied",
+              "meeting",
+              "optedOut"
+            ],
+            "additionalProperties": false
+          },
+          "replaces": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replacedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referredBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextAction": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contactId",
+          "accountId",
+          "name",
+          "title",
+          "email",
+          "linkedin",
+          "phoneVerified",
+          "role",
+          "roleLabel",
+          "roleConfidence",
+          "roleEvidence",
+          "status",
+          "ready",
+          "blockers",
+          "selectedReason",
+          "source",
+          "verification",
+          "outreach",
+          "engagement",
+          "replaces",
+          "replacedBy",
+          "referredBy",
+          "nextAction"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "description": "Stable contact id used by tasks, events, conversations, outcomes and CRM sync"
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "linkedin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phoneVerified": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "economic_buyer",
+              "operational_owner",
+              "champion",
+              "supporting"
+            ]
+          },
+          "roleLabel": {
+            "type": "string"
+          },
+          "roleConfidence": {
+            "type": "number"
+          },
+          "roleEvidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "candidate",
+              "selected",
+              "paused",
+              "rejected",
+              "replaced",
+              "opted_out"
+            ]
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "selectedReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "employment": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "email": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "phone": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fresh": {
+                "type": "boolean"
+              },
+              "duplicateOf": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suppressed": {
+                "type": "boolean"
+              },
+              "checkedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "attempts": {
+                "type": "number"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "employment",
+              "email",
+              "phone",
+              "fresh",
+              "duplicateOf",
+              "suppressed",
+              "checkedAt",
+              "attempts",
+              "lastError"
+            ],
+            "additionalProperties": false
+          },
+          "outreach": {
+            "type": "object",
+            "properties": {
+              "order": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "startDay": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "touchesSent": {
+                "type": "number"
+              },
+              "lastTouchAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "heldReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "order",
+              "startDay",
+              "touchesSent",
+              "lastTouchAt",
+              "heldReason"
+            ],
+            "additionalProperties": false
+          },
+          "engagement": {
+            "type": "object",
+            "properties": {
+              "score": {
+                "type": "number"
+              },
+              "lastEventAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "replied": {
+                "type": "boolean"
+              },
+              "meeting": {
+                "type": "boolean"
+              },
+              "optedOut": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "score",
+              "lastEventAt",
+              "replied",
+              "meeting",
+              "optedOut"
+            ],
+            "additionalProperties": false
+          },
+          "replaces": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replacedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referredBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextAction": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contactId",
+          "accountId",
+          "name",
+          "title",
+          "email",
+          "linkedin",
+          "phoneVerified",
+          "role",
+          "roleLabel",
+          "roleConfidence",
+          "roleEvidence",
+          "status",
+          "ready",
+          "blockers",
+          "selectedReason",
+          "source",
+          "verification",
+          "outreach",
+          "engagement",
+          "replaces",
+          "replacedBy",
+          "referredBy",
+          "nextAction"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "description": "Stable contact id used by tasks, events, conversations, outcomes and CRM sync"
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "linkedin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phoneVerified": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "economic_buyer",
+              "operational_owner",
+              "champion",
+              "supporting"
+            ]
+          },
+          "roleLabel": {
+            "type": "string"
+          },
+          "roleConfidence": {
+            "type": "number"
+          },
+          "roleEvidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "candidate",
+              "selected",
+              "paused",
+              "rejected",
+              "replaced",
+              "opted_out"
+            ]
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "selectedReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "employment": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "email": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "phone": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fresh": {
+                "type": "boolean"
+              },
+              "duplicateOf": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suppressed": {
+                "type": "boolean"
+              },
+              "checkedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "attempts": {
+                "type": "number"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "employment",
+              "email",
+              "phone",
+              "fresh",
+              "duplicateOf",
+              "suppressed",
+              "checkedAt",
+              "attempts",
+              "lastError"
+            ],
+            "additionalProperties": false
+          },
+          "outreach": {
+            "type": "object",
+            "properties": {
+              "order": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "startDay": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "touchesSent": {
+                "type": "number"
+              },
+              "lastTouchAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "heldReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "order",
+              "startDay",
+              "touchesSent",
+              "lastTouchAt",
+              "heldReason"
+            ],
+            "additionalProperties": false
+          },
+          "engagement": {
+            "type": "object",
+            "properties": {
+              "score": {
+                "type": "number"
+              },
+              "lastEventAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "replied": {
+                "type": "boolean"
+              },
+              "meeting": {
+                "type": "boolean"
+              },
+              "optedOut": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "score",
+              "lastEventAt",
+              "replied",
+              "meeting",
+              "optedOut"
+            ],
+            "additionalProperties": false
+          },
+          "replaces": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replacedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referredBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextAction": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contactId",
+          "accountId",
+          "name",
+          "title",
+          "email",
+          "linkedin",
+          "phoneVerified",
+          "role",
+          "roleLabel",
+          "roleConfidence",
+          "roleEvidence",
+          "status",
+          "ready",
+          "blockers",
+          "selectedReason",
+          "source",
+          "verification",
+          "outreach",
+          "engagement",
+          "replaces",
+          "replacedBy",
+          "referredBy",
+          "nextAction"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "nextAction": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "accountId",
+    "plan",
+    "summary",
+    "gaps",
+    "group",
+    "candidates",
+    "history",
+    "nextAction"
+  ],
+  "additionalProperties": false
+}
+```
+
+### `list_contacts`
+
+Buying-group people for one account or across accounts, filtered by status or role.
+
+- Scope: `read` · read-only
+- Retry: Safe to retry (read-only).
+- Pagination: cursor (`nextCursor`), max limit 100
+- Errors: `not_found` when no such account
+
+Input schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "accountId": {
+      "description": "Stable account id (preferred)",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "slug": {
+      "description": "Account slug (alternative to accountId)",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "status": {
+      "maxItems": 6,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "candidate",
+          "selected",
+          "paused",
+          "rejected",
+          "replaced",
+          "opted_out"
+        ]
+      }
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "economic_buyer",
+        "operational_owner",
+        "champion",
+        "supporting"
+      ]
+    },
+    "limit": {
+      "default": 50,
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "cursor": {
+      "description": "Opaque cursor from the previous page's nextCursor",
+      "type": "string",
+      "maxLength": 400
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "description": "Stable contact id used by tasks, events, conversations, outcomes and CRM sync"
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "linkedin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phoneVerified": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "economic_buyer",
+              "operational_owner",
+              "champion",
+              "supporting"
+            ]
+          },
+          "roleLabel": {
+            "type": "string"
+          },
+          "roleConfidence": {
+            "type": "number"
+          },
+          "roleEvidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "candidate",
+              "selected",
+              "paused",
+              "rejected",
+              "replaced",
+              "opted_out"
+            ]
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "selectedReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "employment": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "email": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "phone": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ok",
+                      "source",
+                      "at",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fresh": {
+                "type": "boolean"
+              },
+              "duplicateOf": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suppressed": {
+                "type": "boolean"
+              },
+              "checkedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "attempts": {
+                "type": "number"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "employment",
+              "email",
+              "phone",
+              "fresh",
+              "duplicateOf",
+              "suppressed",
+              "checkedAt",
+              "attempts",
+              "lastError"
+            ],
+            "additionalProperties": false
+          },
+          "outreach": {
+            "type": "object",
+            "properties": {
+              "order": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "startDay": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "touchesSent": {
+                "type": "number"
+              },
+              "lastTouchAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "heldReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "order",
+              "startDay",
+              "touchesSent",
+              "lastTouchAt",
+              "heldReason"
+            ],
+            "additionalProperties": false
+          },
+          "engagement": {
+            "type": "object",
+            "properties": {
+              "score": {
+                "type": "number"
+              },
+              "lastEventAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "replied": {
+                "type": "boolean"
+              },
+              "meeting": {
+                "type": "boolean"
+              },
+              "optedOut": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "score",
+              "lastEventAt",
+              "replied",
+              "meeting",
+              "optedOut"
+            ],
+            "additionalProperties": false
+          },
+          "replaces": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replacedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referredBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextAction": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contactId",
+          "accountId",
+          "name",
+          "title",
+          "email",
+          "linkedin",
+          "phoneVerified",
+          "role",
+          "roleLabel",
+          "roleConfidence",
+          "roleEvidence",
+          "status",
+          "ready",
+          "blockers",
+          "selectedReason",
+          "source",
+          "verification",
+          "outreach",
+          "engagement",
+          "replaces",
+          "replacedBy",
+          "referredBy",
+          "nextAction"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "items",
+    "nextCursor"
+  ],
+  "additionalProperties": false
+}
+```
+
+### `research_contacts`
+
+Run the contact research team on one account now: map new people, verify each one (enrichment provider or Jerry), refill the plan and report gaps.
+
+- Scope: `contacts:write` · mutation · affects external systems
+- Retry: Retry with the same idempotencyKey; a new key runs research again (verification itself retries with backoff).
+- Errors: `not_found` when no such account
+
+Input schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "accountId": {
+      "description": "Stable account id (preferred)",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "slug": {
+      "description": "Account slug (alternative to accountId)",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 200,
+      "description": "Caller-chosen key; a retry with the same key returns the first result and never acts twice"
+    }
+  },
+  "required": [
+    "idempotencyKey"
+  ]
+}
+```
+
+Output schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "accountId": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "verifiedNow": {
+      "type": "number"
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "accountId",
+    "summary",
+    "verifiedNow",
+    "gaps"
+  ],
+  "additionalProperties": false
+}
+```
+
+### `add_contact`
+
+Add a person to an account's buying group (e.g. one the rep knows). They are verified like anyone else; the coverage coordinator decides whether they fill a role.
+
+- Scope: `contacts:write` · mutation · affects external systems
+- Retry: Retry with the same idempotencyKey; the same person is never added twice.
+- Errors: `not_found` when no such account; `conflict` when the person was marked wrong for this account
+
+Input schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "accountId": {
+      "description": "Stable account id (preferred)",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "slug": {
+      "description": "Account slug (alternative to accountId)",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+    },
+    "phone": {
+      "type": "string",
+      "maxLength": 40
+    },
+    "linkedin": {
+      "type": "string",
+      "maxLength": 400
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 200,
+      "description": "Caller-chosen key; a retry with the same key returns the first result and never acts twice"
+    }
+  },
+  "required": [
+    "name",
+    "title",
+    "idempotencyKey"
+  ]
+}
+```
+
+Output schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "contact": {
+      "type": "object",
+      "properties": {
+        "contactId": {
+          "type": "string",
+          "description": "Stable contact id used by tasks, events, conversations, outcomes and CRM sync"
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "linkedin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phoneVerified": {
+          "type": "boolean"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "economic_buyer",
+            "operational_owner",
+            "champion",
+            "supporting"
+          ]
+        },
+        "roleLabel": {
+          "type": "string"
+        },
+        "roleConfidence": {
+          "type": "number"
+        },
+        "roleEvidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "candidate",
+            "selected",
+            "paused",
+            "rejected",
+            "replaced",
+            "opted_out"
+          ]
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "selectedReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "verification": {
+          "type": "object",
+          "properties": {
+            "employment": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "source",
+                    "at",
+                    "detail"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "source",
+                    "at",
+                    "detail"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "phone": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "source",
+                    "at",
+                    "detail"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fresh": {
+              "type": "boolean"
+            },
+            "duplicateOf": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "suppressed": {
+              "type": "boolean"
+            },
+            "checkedAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "attempts": {
+              "type": "number"
+            },
+            "lastError": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "employment",
+            "email",
+            "phone",
+            "fresh",
+            "duplicateOf",
+            "suppressed",
+            "checkedAt",
+            "attempts",
+            "lastError"
+          ],
+          "additionalProperties": false
+        },
+        "outreach": {
+          "type": "object",
+          "properties": {
+            "order": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "startDay": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "touchesSent": {
+              "type": "number"
+            },
+            "lastTouchAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "heldReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "order",
+            "startDay",
+            "touchesSent",
+            "lastTouchAt",
+            "heldReason"
+          ],
+          "additionalProperties": false
+        },
+        "engagement": {
+          "type": "object",
+          "properties": {
+            "score": {
+              "type": "number"
+            },
+            "lastEventAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "replied": {
+              "type": "boolean"
+            },
+            "meeting": {
+              "type": "boolean"
+            },
+            "optedOut": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "score",
+            "lastEventAt",
+            "replied",
+            "meeting",
+            "optedOut"
+          ],
+          "additionalProperties": false
+        },
+        "replaces": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replacedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "referredBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nextAction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contactId",
+        "accountId",
+        "name",
+        "title",
+        "email",
+        "linkedin",
+        "phoneVerified",
+        "role",
+        "roleLabel",
+        "roleConfidence",
+        "roleEvidence",
+        "status",
+        "ready",
+        "blockers",
+        "selectedReason",
+        "source",
+        "verification",
+        "outreach",
+        "engagement",
+        "replaces",
+        "replacedBy",
+        "referredBy",
+        "nextAction"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "contact"
+  ],
+  "additionalProperties": false
+}
+```
+
+### `replace_contact`
+
+This person is wrong for the account. They are marked rejected (record, tasks, events and outcomes kept), their open tasks are held, they are never re-selected, and the next verified person takes the role (or the gap is reported).
+
+- Scope: `contacts:write` · mutation · destructive
+- Retry: Retry with the same idempotencyKey.
+- Errors: `not_found` when no such contact; `conflict` when the person is already replaced, rejected or opted out
+
+Input schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "contactId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Stable buying-group contact id"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 300
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 200,
+      "description": "Caller-chosen key; a retry with the same key returns the first result and never acts twice"
+    }
+  },
+  "required": [
+    "contactId",
+    "reason",
+    "idempotencyKey"
+  ]
+}
+```
+
+Output schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "contactId": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "replacement": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "contactId": {
+              "type": "string",
+              "description": "Stable contact id used by tasks, events, conversations, outcomes and CRM sync"
+            },
+            "accountId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "email": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "linkedin": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "phoneVerified": {
+              "type": "boolean"
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "economic_buyer",
+                "operational_owner",
+                "champion",
+                "supporting"
+              ]
+            },
+            "roleLabel": {
+              "type": "string"
+            },
+            "roleConfidence": {
+              "type": "number"
+            },
+            "roleEvidence": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "candidate",
+                "selected",
+                "paused",
+                "rejected",
+                "replaced",
+                "opted_out"
+              ]
+            },
+            "ready": {
+              "type": "boolean"
+            },
+            "blockers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "selectedReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string"
+            },
+            "verification": {
+              "type": "object",
+              "properties": {
+                "employment": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ok": {
+                          "type": "boolean"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "ok",
+                        "source",
+                        "at",
+                        "detail"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "email": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ok": {
+                          "type": "boolean"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "ok",
+                        "source",
+                        "at",
+                        "detail"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "phone": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ok": {
+                          "type": "boolean"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "ok",
+                        "source",
+                        "at",
+                        "detail"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "fresh": {
+                  "type": "boolean"
+                },
+                "duplicateOf": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "suppressed": {
+                  "type": "boolean"
+                },
+                "checkedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "attempts": {
+                  "type": "number"
+                },
+                "lastError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "employment",
+                "email",
+                "phone",
+                "fresh",
+                "duplicateOf",
+                "suppressed",
+                "checkedAt",
+                "attempts",
+                "lastError"
+              ],
+              "additionalProperties": false
+            },
+            "outreach": {
+              "type": "object",
+              "properties": {
+                "order": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "startDay": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "touchesSent": {
+                  "type": "number"
+                },
+                "lastTouchAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "heldReason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "order",
+                "startDay",
+                "touchesSent",
+                "lastTouchAt",
+                "heldReason"
+              ],
+              "additionalProperties": false
+            },
+            "engagement": {
+              "type": "object",
+              "properties": {
+                "score": {
+                  "type": "number"
+                },
+                "lastEventAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "replied": {
+                  "type": "boolean"
+                },
+                "meeting": {
+                  "type": "boolean"
+                },
+                "optedOut": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "score",
+                "lastEventAt",
+                "replied",
+                "meeting",
+                "optedOut"
+              ],
+              "additionalProperties": false
+            },
+            "replaces": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "replacedBy": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "referredBy": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "nextAction": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "contactId",
+            "accountId",
+            "name",
+            "title",
+            "email",
+            "linkedin",
+            "phoneVerified",
+            "role",
+            "roleLabel",
+            "roleConfidence",
+            "roleEvidence",
+            "status",
+            "ready",
+            "blockers",
+            "selectedReason",
+            "source",
+            "verification",
+            "outreach",
+            "engagement",
+            "replaces",
+            "replacedBy",
+            "referredBy",
+            "nextAction"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "coverage": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "contactId",
+    "status",
+    "replacement",
+    "coverage"
+  ],
+  "additionalProperties": false
+}
+```
+
+### `set_contact_hold`
+
+pause holds one person's outreach (the rest of the group continues); resume releases a hold (including the automatic hold after a colleague replied).
+
+- Scope: `contacts:write` · mutation
+- Retry: Retry with the same idempotencyKey.
+- Errors: `not_found` when no such contact; `conflict` when the person is not in a state that allows it
+
+Input schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "contactId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Stable buying-group contact id"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "pause",
+        "resume"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 300
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 200,
+      "description": "Caller-chosen key; a retry with the same key returns the first result and never acts twice"
+    }
+  },
+  "required": [
+    "contactId",
+    "action",
+    "idempotencyKey"
+  ]
+}
+```
+
+Output schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "contact": {
+      "type": "object",
+      "properties": {
+        "contactId": {
+          "type": "string",
+          "description": "Stable contact id used by tasks, events, conversations, outcomes and CRM sync"
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "linkedin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phoneVerified": {
+          "type": "boolean"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "economic_buyer",
+            "operational_owner",
+            "champion",
+            "supporting"
+          ]
+        },
+        "roleLabel": {
+          "type": "string"
+        },
+        "roleConfidence": {
+          "type": "number"
+        },
+        "roleEvidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "candidate",
+            "selected",
+            "paused",
+            "rejected",
+            "replaced",
+            "opted_out"
+          ]
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "selectedReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "verification": {
+          "type": "object",
+          "properties": {
+            "employment": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "source",
+                    "at",
+                    "detail"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "source",
+                    "at",
+                    "detail"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "phone": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "source",
+                    "at",
+                    "detail"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fresh": {
+              "type": "boolean"
+            },
+            "duplicateOf": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "suppressed": {
+              "type": "boolean"
+            },
+            "checkedAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "attempts": {
+              "type": "number"
+            },
+            "lastError": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "employment",
+            "email",
+            "phone",
+            "fresh",
+            "duplicateOf",
+            "suppressed",
+            "checkedAt",
+            "attempts",
+            "lastError"
+          ],
+          "additionalProperties": false
+        },
+        "outreach": {
+          "type": "object",
+          "properties": {
+            "order": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "startDay": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "touchesSent": {
+              "type": "number"
+            },
+            "lastTouchAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "heldReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "order",
+            "startDay",
+            "touchesSent",
+            "lastTouchAt",
+            "heldReason"
+          ],
+          "additionalProperties": false
+        },
+        "engagement": {
+          "type": "object",
+          "properties": {
+            "score": {
+              "type": "number"
+            },
+            "lastEventAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "replied": {
+              "type": "boolean"
+            },
+            "meeting": {
+              "type": "boolean"
+            },
+            "optedOut": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "score",
+            "lastEventAt",
+            "replied",
+            "meeting",
+            "optedOut"
+          ],
+          "additionalProperties": false
+        },
+        "replaces": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replacedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "referredBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nextAction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contactId",
+        "accountId",
+        "name",
+        "title",
+        "email",
+        "linkedin",
+        "phoneVerified",
+        "role",
+        "roleLabel",
+        "roleConfidence",
+        "roleEvidence",
+        "status",
+        "ready",
+        "blockers",
+        "selectedReason",
+        "source",
+        "verification",
+        "outreach",
+        "engagement",
+        "replaces",
+        "replacedBy",
+        "referredBy",
+        "nextAction"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "contact"
+  ],
+  "additionalProperties": false
+}
+```
+
+### `create_contact_task`
+
+A rep task for one person in the buying group (call, email, LinkedIn, meeting prep). It is attributed to that person and counts as a commitment (rescoring never replaces it). Use act_on_task to complete or skip it.
+
+- Scope: `tasks:write` · mutation
+- Retry: Retry with the same idempotencyKey; the task is created once.
+- Errors: `not_found` when no such contact; `conflict` when the person opted out, was replaced or rejected
+
+Input schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "contactId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Stable buying-group contact id"
+    },
+    "channel": {
+      "type": "string",
+      "enum": [
+        "call",
+        "email",
+        "linkedin",
+        "meeting"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "body": {
+      "default": "",
+      "type": "string",
+      "maxLength": 5000
+    },
+    "subject": {
+      "type": "string",
+      "maxLength": 300
+    },
+    "dueAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 200,
+      "description": "Caller-chosen key; a retry with the same key returns the first result and never acts twice"
+    }
+  },
+  "required": [
+    "contactId",
+    "channel",
+    "title",
+    "idempotencyKey"
+  ]
+}
+```
+
+Output schema:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "task": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "contactId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channel": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "step": {
+          "type": "number"
+        },
+        "dueAt": {
+          "type": "string"
+        },
+        "subject": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "assigneeRepId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "taskId",
+        "accountId",
+        "contactId",
+        "channel",
+        "status",
+        "title",
+        "step",
+        "dueAt",
+        "subject",
+        "body",
+        "source",
+        "assigneeRepId",
+        "lastError"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "task"
   ],
   "additionalProperties": false
 }
@@ -1598,7 +4803,7 @@ Output schema:
 
 ### `run_agent`
 
-Run one agent now (icp, hiring, expansion, technology, pain_point, research, scoring, campaign, video, jerry, learning) or "tick" to run every agent whose cadence has elapsed. Agents may call external providers.
+Run one agent now (icp, hiring, expansion, technology, pain_point, research, contacts, scoring, campaign, video, jerry, learning) or "tick" to run every agent whose cadence has elapsed. Agents may call external providers.
 
 - Scope: `agents:run` · mutation · affects external systems
 - Retry: Retry with the same idempotencyKey; agent runs are also guarded by a per-agent lease.

@@ -4,13 +4,16 @@ import { generateStructured } from "@/lib/llm";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
 import { getSettings, proofStories, reps as repCol } from "@/lib/store/collections";
-import type { Account, Campaign, CampaignDefaults, CompanyPlaybook, ExperimentArms, MessageTemplate, OutreachTouch, ProofStory, RoiDefaults, ScoringModel, Sequence, Signal } from "@/lib/types";
+import type { Account, BuyingContact, Campaign, CampaignDefaults, CompanyPlaybook, ExperimentArms, MessageTemplate, OutreachTouch, ProofStory, RoiDefaults, ScoringModel, Sequence, Signal } from "@/lib/types";
 import { nowIso, pageTokenFor, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
 import { applyExperiments } from "./experiments";
 import { runOperation } from "./operations";
 import { getPlaybook, playbookAngle, playbookPrompt } from "./playbook";
+import { ROLE_LABEL } from "./buying-group";
+import { coordinateSchedule, personalizeForRole, renumber } from "./coordination";
 import { BUILTIN_SEQUENCE, loadSequencePlan } from "./sequences";
+import { taskUrlFor } from "./tasks";
 import { assessmentUrlFor, bookingUrlFor, renderTemplate, templateContext } from "./templates";
 import { ensureProofSeeded, rankProof } from "./proof";
 import { SIGNAL_BY_KEY, signalLabel } from "./signal-catalog";
@@ -402,8 +405,14 @@ export async function launchCampaign(
     revision: opts.revision ?? 0,
   };
 
-  await ctx.store.insertOutreach(buildTouches(account, campaign, copy, proof, { ...plan, repName }));
-  await logActivity(ctx.store, account.id, "campaign", "sequence_selected", `Sequence "${plan.sequence.name}" (${plan.reason})`, [
+  // Buying group: one coordinated sequence per selected person (staggered, spaced, personalized by role).
+  const group = await ctx.store.listContacts({ accountId: account.id, status: "selected" });
+  const touches = group.length
+    ? groupTouches(account, campaign, ctx.model, arms, proof, playbook, copy, { ...plan, repName }, group, [])
+    : buildTouches(account, campaign, copy, proof, { ...plan, repName }).map((t) => ({ ...t, contactId: account.primaryContactId ?? null }));
+  await ctx.store.insertOutreach(touches);
+  await logActivity(ctx.store, account.id, "campaign", "sequence_selected", `Sequence "${plan.sequence.name}" (${plan.reason})${group.length > 1 ? ` for ${group.length} people` : ""}`, [
+    ...group.map((c) => `${c.outreach.order}. ${c.person.name}, ${c.person.title} (${ROLE_LABEL[c.role].toLowerCase()}) from day ${c.outreach.startDay ?? 0}`),
     ...plan.skipped.map((x) => `step ${x.step}: ${x.reason}; the engine wrote it instead`),
     ...Object.entries(assignments).map(([exp, arm]) => `Lab: experiment ${exp.slice(0, 8)} arm ${arm}`),
   ]);
@@ -411,10 +420,91 @@ export async function launchCampaign(
   return attemptLaunch(ctx.store, ctx.providers, prepared, ctx.log);
 }
 
+/**
+ * Touches for several people at one account. The primary person gets the
+ * campaign copy; the others get the template copy written for them. Each
+ * sequence starts on its stagger day, is personalized by role, and the whole
+ * set is spaced under the account-wide limits.
+ */
+export function groupTouches(
+  account: Account,
+  campaign: Campaign,
+  model: ScoringModel,
+  arms: ExperimentArms,
+  proof: ProofLine | null,
+  playbook: CompanyPlaybook | null,
+  primaryCopy: CampaignCopy,
+  plan: TouchPlan,
+  group: BuyingContact[],
+  existing: OutreachTouch[],
+  startFrom = 1,
+): OutreachTouch[] {
+  const DAY = 86_400_000;
+  const baseDay = group.reduce((m, c) => Math.min(m, c.outreach.startDay ?? 0), Infinity);
+  const per = group.map((c, i) => {
+    const view: Account = { ...account, contact: c.person };
+    const copy = i === 0 && c.id === (account.primaryContactId ?? group[0].id) ? primaryCopy : templateCopy(view, model, arms, proof, playbook);
+    const offset = ((c.outreach.startDay ?? 0) - (Number.isFinite(baseDay) ? baseDay : 0)) * DAY;
+    const touches = buildTouches(view, campaign, copy, proof, plan).map((t) => ({ ...t, scheduledFor: new Date(new Date(t.scheduledFor).getTime() + offset).toISOString(), taskUrl: taskUrlFor(view, t.channel) }));
+    return { contactId: c.id, touches: personalizeForRole(touches, c) };
+  });
+  return renumber(coordinateSchedule(per, existing), startFrom);
+}
+
+/**
+ * Selected people with no sequence yet (a replacement, a referral, or a
+ * contact verified after launch) get theirs, spaced around what is already
+ * scheduled, under a per-person durable launch `launch:<accountId>:c:<contactId>`.
+ */
+export async function extendGroupOutreach(account: Account, ctx: { store: Store; providers: Providers; model: ScoringModel; log?: (s: string) => void }): Promise<number> {
+  if (!account.campaign || account.campaign.launchState !== "live" || ["won", "lost", "disqualified", "meeting_booked"].includes(account.status)) return 0;
+  const tasks = await ctx.store.listOutreach({ accountId: account.id });
+  const group = (await ctx.store.listContacts({ accountId: account.id, status: "selected" })).filter((c) => !tasks.some((t) => t.contactId === c.id && (t.source === "sequence" || t.source === undefined)));
+  if (!group.length) return 0;
+  const [settings, playbook] = await Promise.all([getSettings(), getPlaybook()]);
+  const arms = account.campaign.arms ?? campaignArms(settings.defaults, {});
+  const proof = await loadProofLine(account, arms.proofMode ?? "matched");
+  const plan = await loadSequencePlan(account, arms);
+  const repName = account.ownerRepId ? ((await repCol.get(account.ownerRepId))?.name ?? null) : null;
+  const now = Date.now();
+  const staged = group.map((c, i) => ({ ...c, outreach: { ...c.outreach, startDay: i * 2 } }));
+  const fresh = groupTouches(account, account.campaign, ctx.model, arms, proof, playbook, templateCopy(account, ctx.model, arms, proof, playbook), { ...plan, repName }, staged, tasks.filter((t) => t.scheduledFor >= new Date(now - 7 * 86_400_000).toISOString()), Math.max(0, ...tasks.map((t) => (t.step < 90 ? t.step : 0))) + 1);
+  await ctx.store.insertOutreach(fresh);
+  for (const c of group) await logActivity(ctx.store, account.id, "campaign", "sequence_extended", `${c.person.name} (${ROLE_LABEL[c.role].toLowerCase()}) added to outreach: ${fresh.filter((t) => t.contactId === c.id).length} steps`, [c.selectedReason ?? ""]);
+  await launchContactSequences(ctx.store, ctx.providers, account);
+  return group.length;
+}
+
+/**
+ * Launch each non-primary person's sequence under their own durable operation
+ * `launch:<accountId>:c:<contactId>`; the Sequencer receives that person as
+ * the contact. Replays of finished launches are no-ops, so this is safe to
+ * call on every tick.
+ */
+export async function launchContactSequences(store: Store, providers: Providers, account: Account): Promise<number> {
+  // Not yet handed to the outreach provider (the account-level launch already took the primary person's steps).
+  const tasks = (await store.listOutreach({ accountId: account.id })).filter((t) => t.contactId && t.provider === "pending" && ["scheduled", "awaiting_approval"].includes(t.status) && (t.source === "sequence" || t.source === undefined));
+  let launched = 0;
+  for (const id of [...new Set(tasks.map((t) => t.contactId!))]) {
+    const c = await store.getContact(id);
+    if (!c || !["selected", "paused"].includes(c.status)) continue;
+    const mine = tasks.filter((t) => t.contactId === id);
+    const outcome = await runOperation(store, { id: `launch:${account.id}:c:${id}`, kind: "sequence_launch", accountId: account.id, destination: providers.outreach.name, maxAttempts: 5 }, async (key) => {
+      const r = await providers.outreach.launchSequence({ ...account, contact: c.person }, mine, key);
+      for (const t of r.touches) await store.updateOutreach(t);
+      return { remoteId: r.sequenceId, result: { touches: r.touches.length } };
+    });
+    if (outcome.state === "succeeded" && !outcome.replayed) launched++;
+    if (outcome.state === "failed") await logActivity(store, account.id, "campaign", "sequence_launch_failed", `Sequence for ${c.person.name} could not be launched${outcome.retryable ? "; retrying automatically" : "; needs attention"}`, [outcome.error]);
+  }
+  return launched;
+}
+
 /** Launch (or retry launching) the sequence under the durable operation `launch:<accountId>`. */
 export async function attemptLaunch(store: Store, providers: Providers, account: Account, log?: (s: string) => void): Promise<Account> {
   if (!account.campaign) return account;
-  const touches = (await store.listOutreach({ accountId: account.id })).filter((t) => t.source === "sequence" || t.source === undefined);
+  // The account-level launch carries the primary person; everyone else launches under their own operation.
+  const touches = (await store.listOutreach({ accountId: account.id })).filter((t) => (t.source === "sequence" || t.source === undefined) && (!t.contactId || t.contactId === account.primaryContactId));
   const rev = account.campaign.revision ?? 0;
   const outcome = await runOperation(store, { id: rev ? `launch:${account.id}:r${rev}` : `launch:${account.id}`, kind: "sequence_launch", accountId: account.id, destination: providers.outreach.name, maxAttempts: 5 }, async (key) => {
     const r = await providers.outreach.launchSequence(account, touches, key);
@@ -428,6 +518,7 @@ export async function attemptLaunch(store: Store, providers: Providers, account:
       campaign: { ...account.campaign, launchState: "live", launchError: null, sequenceId: outcome.remoteId ?? account.campaign.sequenceId ?? null },
       status: ["qualified", "scored", "needs_enrichment"].includes(account.status) ? "campaign_live" : account.status,
     };
+    await launchContactSequences(store, providers, account);
     if (!outcome.replayed) await logActivity(store, account.id, "campaign", "sequence_live", `Sequence acknowledged by ${providers.outreach.name}${outcome.remoteId ? ` (${outcome.remoteId})` : ""}`);
     return live;
   }

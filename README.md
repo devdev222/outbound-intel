@@ -46,7 +46,7 @@ variable, so wiring the real systems in is configuration, not a rewrite. See
 
 ## The team
 
-Eleven agents run continuously on cadences (`lib/agents/`). Each pulls its own work from the store, processes a bounded batch and writes back, so the team survives restarts and can run across several workers. Every action an agent takes on an account is written to that account's activity log and shown next to the prospect's own engagement on the account page.
+Twelve agents run continuously on cadences (`lib/agents/`). Each pulls its own work from the store, processes a bounded batch and writes back, so the team survives restarts and can run across several workers. Every action an agent takes on an account is written to that account's activity log and shown next to the prospect's own engagement on the account page.
 
 | Agent | Step | Does |
 |---|---|---|
@@ -56,6 +56,7 @@ Eleven agents run continuously on cadences (`lib/agents/`). Each pulls its own w
 | Technology Agent | 2 | TMS / ERP / spreadsheet footprint; inferred states are hypotheses |
 | Pain-Point Agent | 2 | Public evidence of coordination load, carrier and service problems, cost pressure; infers pain from hiring volume |
 | Research Agent | 2 | Validates or rejects each signal against its evidence, picks the decision-maker, writes the brief, lists what is missing |
+| Contact Research Team | 2 | Maps each account's buying group, verifies every person independently (employment, details, freshness, duplicates, suppression), selects the group for the plan and names the gaps |
 | Scoring Agent | 3 | Scores with the current model version, explains, qualifies |
 | Campaign Agent | 4-5 | Builds and launches the personalized page content and the 5-touch sequence; sends due touches or hands them to reps as tasks |
 | Video Agent | 4 | Writes the 15-25s beat sheet and script from the whole dossier; submits AI renders to Tavus or issues a rep recording brief; rewrites when signals change |
@@ -108,6 +109,19 @@ Without `ANTHROPIC_API_KEY` every agent uses a deterministic template path, so t
 - **Contracts.** `lib/contracts/operations.ts` defines each operation once (validated input/output, scope, errors, pagination, retry). The same definitions back `POST /api/v1/<name>`, the MCP server and `docs/CONTRACTS.md` (`npm run contracts:doc`).
 - **Capabilities.** `lib/capabilities.ts` is the single registry for provider selection, required settings, supported actions and kind (mock, test, built in, proposed bridge, vendor API). See `docs/INTEGRATIONS.md` for what each integration still needs and `docs/MCP.md` for MCP scopes and remote-access requirements.
 
+## Buying groups
+
+Every account is worked as a buying group, not a single contact.
+
+- **Plan.** By default, four roles: operational owner (owns the shipping work), potential champion (feels the pain daily), economic buyer (budget and the final yes), supporting stakeholder (procurement, IT, coordinators). Outreach starts in that order, staggered over 8 days. Once enough past deals recorded their group (25+ per segment), the plan for an industry, company size or use case follows history instead: more or fewer people, different roles, a different order. Those patterns are associations, not causes, and are labelled that way.
+- **Contact research team** (`lib/engine/buying-group.ts`, run by the Contact Research Team agent): the account mapper lists likely members, the contact researcher records why each person fits a role, the verification agent checks each person on their own (employment and freshness from the source, email and phone through the enrichment provider or Jerry, duplicates, suppression; synthetic data never counts in live mode; failures retry with backoff), and the coverage coordinator selects the group and names every gap with a reason. If only two people verify, outreach starts with two and the other roles show as gaps.
+- **Per-person lifecycle.** Each person (`contacts` table, stable `contactId`) has a role with evidence and confidence, verification, relationship, status, outreach history, engagement, tasks and outcomes. The account keeps ownership, readiness and coverage; `account.contact` mirrors the primary person so single-contact views keep working.
+- **Coordinated outreach** (`lib/engine/coordination.ts`): one sequence per person, personalized by responsibility, staggered, and spaced under account-wide limits (one message to anyone at the company per day, five per rolling week), enforced again at send time. A reply stops that person's sequence, holds the others for five days and creates a rep task to coordinate; a meeting stops the group sequence; an opt-out stops only that person; a wrong contact is replaced without losing history and the next verified person in that role gets their own sequence; a referral becomes a verified candidate.
+- **Attribution.** Tasks, events (`properties.contactId`, resolved from the task, an explicit id, or an email/LinkedIn reference), conversations, outcomes, CRM sync (`contact_id`) and the training history all carry the person. Training history records who was contacted and, separately, who helped the deal progress.
+- **Where to see it.** Account page → Contacts (people, roles, confidence, verification, outreach, gaps, why this person and why this group, one next action, log a conversation per person, pause/resume, wrong person, research more). Today rows show the task's person and coverage. Intelligence → Buying groups shows roles in wins, win rate by group size, role combinations and the recommended group per segment.
+- **APIs and MCP.** `GET/POST /api/accounts/:slug/contacts`, `GET/POST /api/contacts/:id`, and the contracts `get_coverage`, `list_contacts`, `research_contacts`, `add_contact`, `replace_contact`, `set_contact_hold`, `create_contact_task`; `contactId` on `list_tasks`, `log_conversation`, `log_outcome` and `record_provider_event`.
+- **Existing accounts** migrate on the agent's first pass: the current contact becomes the primary person of the group and keeps every task already sent.
+
 ## Running 24/7
 
 - `npm run worker` as a long-running process (Railway, Fly, ECS), sharing the database with the web app.
@@ -128,6 +142,7 @@ The Agents page shows each agent's cadence, last run, totals, the run log, and l
   psql "$DATABASE_URL" -f supabase/migrations/0003_documents_and_platform.sql
   psql "$DATABASE_URL" -f supabase/migrations/0004_reliability.sql
   psql "$DATABASE_URL" -f supabase/migrations/0005_integrity.sql
+  psql "$DATABASE_URL" -f supabase/migrations/0006_buying_groups.sql
   ```
 
   (or paste them in that order into the Supabase SQL editor). `0004` adds the account fields the app relies on (owner, readiness, next action, experiments, pipeline value, CRM owner, pause, enrichment state), task lifecycle columns, alert deliveries, opportunity ids, the `operations` table and `app_meta.schema_version`. `npm run check` and `GET /api/health` refuse to report ready until the schema version matches.
@@ -154,7 +169,7 @@ The Agents page shows each agent's cadence, last run, totals, the run log, and l
 
 ## MCP server
 
-`npm run mcp` exposes the engine over MCP (stdio) with tools `list_hot_leads`, `search_accounts`, `get_account_brief`, `record_engagement`, `log_outcome`, `get_model_summary`, `run_agent`. Register it in Claude Code with:
+`npm run mcp` exposes the engine over MCP (stdio) with the shared contracts in `docs/CONTRACTS.md` (accounts, tasks, buying-group coverage and contacts, provider events, outcomes, conversations, model summary, agent runs; read-only unless `MCP_SCOPES` grants more; see `docs/MCP.md`). Register it in Claude Code with:
 
 ```bash
 claude mcp add outbound-intel -- npm --prefix <path-to-repo> run -s mcp
@@ -173,6 +188,8 @@ Jerry (or any other agent) can drive the engine the same way.
 | `POST /api/webhooks/tavus` | Video ready / error callback |
 | `POST /api/webhooks/rb2b` | Identified website visitors |
 | `POST /api/webhooks/calendly` | Booked / canceled meetings (signed) |
+| `GET/POST /api/accounts/:slug/contacts` | Buying-group coverage; research more or add a person (`contacts:write`) |
+| `GET/POST /api/contacts/:id` | One person with their tasks, conversations and outcomes; replace, pause or resume |
 | `POST /api/agents/tick` | One runtime tick for schedulers |
 | `GET /api/agents` | Team status for the dashboard |
 

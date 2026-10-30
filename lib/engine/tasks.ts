@@ -65,6 +65,8 @@ export interface NewTask {
   note?: string;
   conversationId?: string | null;
   assigneeRepId?: string | null;
+  /** The buying-group contact this task is for. */
+  contactId?: string | null;
 }
 
 export async function createTask(store: Store, input: NewTask): Promise<Task> {
@@ -86,14 +88,26 @@ export async function createTask(store: Store, input: NewTask): Promise<Task> {
     attempts: 0,
     lastError: null,
     conversationId: input.conversationId ?? null,
+    contactId: input.contactId ?? input.account.primaryContactId ?? null,
   };
   await store.insertOutreach([task]);
   return task;
 }
 
 async function emit(store: Store, accountId: string, eventType: string, task: Task, provider: string): Promise<void> {
-  const ev: EngagementEvent = { id: uuid(), accountId, eventType, properties: { step: task.step, channel: task.channel, provider, touchId: task.id }, visitorId: null, createdAt: nowIso() };
+  const ev: EngagementEvent = { id: uuid(), accountId, eventType, properties: { step: task.step, channel: task.channel, provider, touchId: task.id, ...(task.contactId ? { contactId: task.contactId } : {}) }, visitorId: null, createdAt: nowIso() };
   await store.insertEvent(ev);
+  if (task.contactId) await store.patchContact(task.contactId, (c) => ({ ...c, outreach: { ...c.outreach, touchesSent: c.outreach.touchesSent + 1, lastTouchAt: ev.createdAt } }));
+}
+
+/**
+ * The account as seen by one task: a task for a buying-group contact is
+ * addressed to that person (account.contact is the primary contact only).
+ */
+export async function recipientView(store: Store, account: Account, task: Pick<Task, "contactId">): Promise<Account> {
+  if (!task.contactId || task.contactId === account.primaryContactId) return account;
+  const c = await store.getContact(task.contactId);
+  return c && c.accountId === account.id ? { ...account, contact: c.person } : account;
 }
 
 function sentEventFor(channel: OutreachChannel): string {
@@ -109,7 +123,8 @@ export type DeliveryResult = { state: "sent" | "retry_scheduled" | "failed" | "b
  * `send:<taskId>`. Two workers cannot both send it; a replayed success just
  * records the earlier acknowledgment.
  */
-export async function deliverTask(store: Store, providers: Providers, task: Task, account: Account): Promise<DeliveryResult> {
+export async function deliverTask(store: Store, providers: Providers, task: Task, accountIn: Account): Promise<DeliveryResult> {
+  const account = await recipientView(store, accountIn, task);
   const sending: Task = { ...task, status: "sending" };
   const outcome = await runOperation(store, { id: `send:${task.id}`, kind: "send", accountId: account.id, destination: providers.outreach.name, maxAttempts: MAX_SEND_ATTEMPTS }, async (key) => {
     await store.updateOutreach(sending);

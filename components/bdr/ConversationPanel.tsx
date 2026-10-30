@@ -18,6 +18,10 @@ export interface PanelContext {
   preparedFollowUp: { subject: string; body: string } | null;
   /** The account's current next action, e.g. "Call back as agreed · due Thu". */
   nextAction?: string | null;
+  /** Buying-group person this conversation is with (attributed to them). */
+  contactId?: string | null;
+  /** Their role in the buying group, shown next to the name. */
+  contactRole?: string | null;
 }
 
 interface LoggedConversation {
@@ -40,6 +44,8 @@ const OUTCOMES: { key: string; label: string }[] = [
   { key: "meeting_booked", label: "Meeting booked" },
   { key: "not_interested", label: "Not interested" },
   { key: "not_now", label: "Not now (pause)" },
+  { key: "referred", label: "Referred me" },
+  { key: "opted_out", label: "Opted out" },
   { key: "wrong_contact", label: "Wrong contact" },
 ];
 
@@ -48,9 +54,12 @@ const OUTCOMES: { key: string; label: string }[] = [
  * next; then log the outcome. Notes survive failures and reloads; a retry
  * after an error or timeout reuses the same request id, so it never logs twice.
  */
-export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: PanelContext; onClose?: () => void; autoOpen?: boolean }) {
+export function ConversationPanel({ ctx, onClose, autoOpen = false, label = "Start conversation", small = false }: { ctx: PanelContext; onClose?: () => void; autoOpen?: boolean; label?: string; small?: boolean }) {
   const router = useRouter();
-  const draftKey = `conversation:${ctx.slug}`;
+  const draftKey = `conversation:${ctx.slug}${ctx.contactId ? `:${ctx.contactId}` : ""}`;
+  const [refName, setRefName] = useState("");
+  const [refTitle, setRefTitle] = useState("");
+  const [refEmail, setRefEmail] = useState("");
   const [open, setOpen] = useState(autoOpen);
   const [channel, setChannel] = useState<(typeof CHANNELS)[number]>("call");
   const [outcome, setOutcome] = useState("connected");
@@ -81,7 +90,7 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
     setError(null);
     const r = await requestJson<{ conversation: LoggedConversation }>("/api/conversations", {
       requestId,
-      body: { slug: ctx.slug, channel, outcome, notes, requestId, ...(outcome === "not_now" ? { pauseDays } : {}), ...(callbackAt && !["not_now", "not_interested", "wrong_contact"].includes(outcome) ? { callbackAt: new Date(callbackAt).toISOString() } : {}) },
+      body: { slug: ctx.slug, channel, outcome, notes, requestId, ...(ctx.contactId ? { contactId: ctx.contactId } : {}), ...(outcome === "referred" && refName.trim() && refTitle.trim() ? { referral: { name: refName.trim(), title: refTitle.trim(), ...(refEmail.trim() ? { email: refEmail.trim() } : {}) } } : {}), ...(outcome === "not_now" ? { pauseDays } : {}), ...(callbackAt && !["not_now", "not_interested", "wrong_contact", "opted_out"].includes(outcome) ? { callbackAt: new Date(callbackAt).toISOString() } : {}) },
       timeoutMs: 60_000,
     });
     setBusy(false);
@@ -109,8 +118,8 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
 
   if (!open) {
     return (
-      <button className="btn btn-accent" onClick={() => setOpen(true)}>
-        Start conversation
+      <button className={`btn ${small ? "btn-sm" : "btn-accent"}`} onClick={() => setOpen(true)}>
+        {label}
       </button>
     );
   }
@@ -120,7 +129,7 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
   return (
     <div className="card mt-3 border-[var(--border-strong)] p-4">
       <div className="mb-3 flex items-center justify-between">
-        <div className="text-[13px] font-semibold">{result ? "Conversation logged" : `Conversation with ${c?.name ?? ctx.company}`}</div>
+        <div className="text-[13px] font-semibold">{result ? "Conversation logged" : `Conversation with ${c?.name ?? ctx.company}${ctx.contactRole ? ` (${ctx.contactRole})` : ""}`}</div>
         <button
           className="btn btn-ghost btn-sm"
           onClick={() => {
@@ -196,7 +205,15 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
                 </button>
               ))}
             </div>
-            {outcome === "wrong_contact" && <div className="rounded-md bg-[var(--warn-soft)] p-2 text-[12px]">This removes {c?.name ?? "the contact"}, holds their outreach and sends the account back to research for the right person.</div>}
+            {outcome === "wrong_contact" && <div className="rounded-md bg-[var(--warn-soft)] p-2 text-[12px]">{ctx.contactId ? `This replaces ${c?.name ?? "the contact"} in the buying group: their history is kept, their open tasks are held and the next verified person takes the role.` : `This removes ${c?.name ?? "the contact"}, holds their outreach and sends the account back to research for the right person.`}</div>}
+            {outcome === "opted_out" && <div className="rounded-md bg-[var(--warn-soft)] p-2 text-[12px]">{c?.name ?? "This person"} is suppressed and never contacted again. Others in the group are not affected.</div>}
+            {outcome === "referred" && (
+              <div className="grid gap-2 sm:grid-cols-3">
+                <input className="field" placeholder="Name" aria-label="Referred person's name" value={refName} onChange={(e) => setRefName(e.target.value)} disabled={busy} />
+                <input className="field" placeholder="Title" aria-label="Referred person's title" value={refTitle} onChange={(e) => setRefTitle(e.target.value)} disabled={busy} />
+                <input className="field" placeholder="Email (optional)" aria-label="Referred person's email" value={refEmail} onChange={(e) => setRefEmail(e.target.value)} disabled={busy} />
+              </div>
+            )}
             {outcome === "not_now" ? (
               <label className="flex items-center gap-2 text-[12.5px]">
                 Pause all outreach for
@@ -208,7 +225,7 @@ export function ConversationPanel({ ctx, onClose, autoOpen = false }: { ctx: Pan
                   ))}
                 </select>
               </label>
-            ) : outcome !== "not_interested" && outcome !== "wrong_contact" ? (
+            ) : !["not_interested", "wrong_contact", "opted_out"].includes(outcome) ? (
               <label className="flex flex-wrap items-center gap-2 text-[12.5px]">
                 Agreed callback (your local time, optional)
                 <input className="field max-w-[220px]" type="datetime-local" value={callbackAt} onChange={(e) => setCallbackAt(e.target.value)} disabled={busy} />

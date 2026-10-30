@@ -84,7 +84,7 @@ export class TestOutreachProvider implements OutreachProvider {
 
   async sendTouch(account: Account, touch: OutreachTouch, key: string): Promise<SendResult> {
     if (!account.contact?.email) return { status: "failed", note: "no contact email on file", retryable: false };
-    await step("send", key, account.id, touch.subject);
+    await step("send", key, account.id, `to=${account.contact.email} ${touch.subject ?? ""}`);
     return { status: "sent", externalId: `test_${touch.id.slice(0, 8)}` };
   }
 

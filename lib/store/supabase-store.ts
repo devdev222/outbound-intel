@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type {
   Account,
+  BuyingContact,
   ActivityEntry,
   AgentId,
   AgentRun,
@@ -112,6 +113,8 @@ export class SupabaseStore implements Store {
       crm_owner: a.crmOwner ?? null,
       rejected_contacts: a.rejectedContacts ?? [],
       contact_hold: a.contactHold ?? null,
+      buying_group: a.buyingGroup ?? null,
+      primary_contact_id: a.primaryContactId ?? null,
       created_at: a.createdAt,
       updated_at: new Date().toISOString(),
     };
@@ -170,6 +173,8 @@ export class SupabaseStore implements Store {
       crmOwner: (r.crm_owner as string) ?? null,
       rejectedContacts: (r.rejected_contacts as Account["rejectedContacts"]) ?? [],
       contactHold: (r.contact_hold as Account["contactHold"]) ?? null,
+      buyingGroup: (r.buying_group as Account["buyingGroup"]) ?? null,
+      primaryContactId: (r.primary_contact_id as string) ?? null,
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
     };
@@ -190,6 +195,7 @@ export class SupabaseStore implements Store {
       first_touch_at: h.firstTouchAt,
       outcome_at: h.outcomeAt,
       source: h.source,
+      contacts: h.contacts ?? null,
     };
   }
 
@@ -208,6 +214,7 @@ export class SupabaseStore implements Store {
       firstTouchAt: r.first_touch_at as string,
       outcomeAt: r.outcome_at as string,
       source: r.source as HistoricalRecord["source"],
+      contacts: (r.contacts as HistoricalRecord["contacts"]) ?? undefined,
     };
   }
 
@@ -223,6 +230,7 @@ export class SupabaseStore implements Store {
       playbook: m.playbook,
       baseline: m.baseline,
       notes: m.notes,
+      buying_group: m.buyingGroup ?? null,
     };
   }
 
@@ -238,6 +246,7 @@ export class SupabaseStore implements Store {
       playbook: r.playbook as ScoringModel["playbook"],
       baseline: r.baseline as ScoringModel["baseline"],
       notes: (r.notes as string[]) ?? [],
+      buyingGroup: (r.buying_group as ScoringModel["buyingGroup"]) ?? undefined,
     };
   }
 
@@ -313,6 +322,54 @@ export class SupabaseStore implements Store {
     return rows.map((r) => this.rowToHistorical(r));
   }
 
+  private contactToRow(c: BuyingContact) {
+    return { id: c.id, account_id: c.accountId, role: c.role, status: c.status, email: c.person.email?.toLowerCase() ?? null, name: c.person.name, data: c, created_at: c.createdAt, updated_at: new Date().toISOString() };
+  }
+
+  async listContacts(opts: { accountId?: string; status?: BuyingContact["status"] | BuyingContact["status"][] } = {}): Promise<BuyingContact[]> {
+    const rows = await this.pageAll(() => {
+      let q = this.db.from("contacts").select("data").order("created_at").order("id");
+      if (opts.accountId) q = q.eq("account_id", opts.accountId);
+      if (opts.status) q = Array.isArray(opts.status) ? q.in("status", opts.status) : q.eq("status", opts.status);
+      return q;
+    }, "listContacts");
+    return rows.map((r) => r.data as BuyingContact).sort((a, b) => (a.outreach.order ?? 99) - (b.outreach.order ?? 99) || a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async getContact(id: string): Promise<BuyingContact | null> {
+    const { data, error } = await this.db.from("contacts").select("data").eq("id", id).maybeSingle();
+    if (error) this.fail("getContact", error);
+    return data ? (data.data as BuyingContact) : null;
+  }
+
+  async upsertContact(contact: BuyingContact): Promise<BuyingContact> {
+    const row = this.contactToRow(contact);
+    const { error } = await this.db.from("contacts").upsert({ ...row, data: { ...contact, updatedAt: row.updated_at } }, { onConflict: "id" });
+    if (error) this.fail("upsertContact", error);
+    return { ...contact, updatedAt: row.updated_at };
+  }
+
+  async patchContact(id: string, fn: (current: BuyingContact) => BuyingContact | null): Promise<BuyingContact | null> {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { data: row, error } = await this.db.from("contacts").select("data, updated_at").eq("id", id).maybeSingle();
+      if (error) this.fail("patchContact(read)", error);
+      if (!row) return null;
+      const next = fn(row.data as BuyingContact);
+      if (!next) return row.data as BuyingContact;
+      const write = this.contactToRow({ ...next, id });
+      const { data, error: werr } = await this.db
+        .from("contacts")
+        .update({ ...write, data: { ...next, id, updatedAt: write.updated_at } })
+        .eq("id", id)
+        .eq("updated_at", row.updated_at as string)
+        .select("data");
+      if (werr) this.fail("patchContact(write)", werr);
+      if (data && data.length) return data[0].data as BuyingContact;
+      await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+    }
+    throw new Error(`[supabase] patchContact: contact ${id} kept changing; gave up after 8 attempts`);
+  }
+
   async getHistorical(id: string): Promise<HistoricalRecord | null> {
     const { data, error } = await this.db.from("historical_accounts").select("*").eq("id", id).maybeSingle();
     if (error) this.fail("getHistorical", error);
@@ -383,6 +440,7 @@ export class SupabaseStore implements Store {
       notes: outcome.notes,
       source: outcome.source,
       opportunity_id: outcome.opportunityId ?? null,
+      contact_id: outcome.contactId ?? null,
       created_at: outcome.createdAt,
     });
     if (error) this.fail("insertOutcome", error);
@@ -403,6 +461,7 @@ export class SupabaseStore implements Store {
       notes: r.notes ?? null,
       source: r.source ?? "api",
       opportunityId: r.opportunity_id ?? null,
+      contactId: r.contact_id ?? null,
       createdAt: r.created_at,
     }));
   }
@@ -558,6 +617,7 @@ export class SupabaseStore implements Store {
       completedBy: (r.completed_by as string) ?? null,
       completionMode: (r.completion_mode as OutreachTouch["completionMode"]) ?? null,
       conversationId: (r.conversation_id as string) ?? null,
+      contactId: (r.contact_id as string) ?? null,
     };
   }
 
@@ -586,6 +646,7 @@ export class SupabaseStore implements Store {
       completed_by: t.completedBy ?? null,
       completion_mode: t.completionMode ?? null,
       conversation_id: t.conversationId ?? null,
+      contact_id: t.contactId ?? null,
     };
   }
 
@@ -862,7 +923,7 @@ export class SupabaseStore implements Store {
     const { error: docs } = await this.db.from("documents").delete().neq("collection", "");
     if (docs) this.fail("reset:documents", docs);
     // Order matters because of foreign keys.
-    for (const table of ["operations", "account_activity", "outreach_touches", "call_queue", "alerts", "outcomes", "events", "agent_runs"]) {
+    for (const table of ["contacts", "operations", "account_activity", "outreach_touches", "call_queue", "alerts", "outcomes", "events", "agent_runs"]) {
       const { error } = await this.db.from(table).delete().not("id", "is", null);
       if (error) this.fail(`reset:${table}`, error);
     }

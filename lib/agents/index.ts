@@ -1,6 +1,7 @@
 import type { AgentId } from "@/lib/types";
 import type { AgentDefinition } from "./base";
 import { campaignAgent } from "./campaign-agent";
+import { contactsAgent } from "./contacts-agent";
 import { jerryAgent } from "./jerry";
 import { learningAgent } from "./learning-agent";
 import { researchAgent } from "./research";
@@ -16,6 +17,7 @@ export const AGENTS: AgentDefinition[] = [
   technologyAgent,
   painPointAgent,
   researchAgent,
+  contactsAgent,
   scoringAgent,
   campaignAgent,
   videoAgent,
