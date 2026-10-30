@@ -33,23 +33,35 @@ const FIELDS: { field: NumericField; label: string; unit: string; sliderMax: num
   { field: "hourly_cost", label: "Fully loaded hourly labor cost", unit: "/ hour", sliderMax: 150, step: 1 },
 ];
 
-const COMMON = ["USD", "CAD", "MXN", "EUR", "GBP", "AUD"];
+/**
+ * Static currency list. Server and browser ICU data differ (e.g. "Kyrgyz Som" vs
+ * "Kyrgystani Som"), so Intl.DisplayNames caused hydration mismatches; a fixed list
+ * renders identically everywhere and covers the shippers this page is built for.
+ */
+const CURRENCIES: { code: string; name: string }[] = [
+  { code: "USD", name: "US Dollar" },
+  { code: "CAD", name: "Canadian Dollar" },
+  { code: "MXN", name: "Mexican Peso" },
+  { code: "EUR", name: "Euro" },
+  { code: "GBP", name: "British Pound" },
+  { code: "AUD", name: "Australian Dollar" },
+  { code: "NZD", name: "New Zealand Dollar" },
+  { code: "CHF", name: "Swiss Franc" },
+  { code: "SEK", name: "Swedish Krona" },
+  { code: "NOK", name: "Norwegian Krone" },
+  { code: "DKK", name: "Danish Krone" },
+  { code: "PLN", name: "Polish Zloty" },
+  { code: "JPY", name: "Japanese Yen" },
+  { code: "CNY", name: "Chinese Yuan" },
+  { code: "INR", name: "Indian Rupee" },
+  { code: "BRL", name: "Brazilian Real" },
+  { code: "ZAR", name: "South African Rand" },
+  { code: "SGD", name: "Singapore Dollar" },
+  { code: "AED", name: "UAE Dirham" },
+];
 
 function currencyOptions(): { code: string; name: string }[] {
-  let all: string[] = COMMON;
-  try {
-    const intl = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
-    if (intl.supportedValuesOf) all = intl.supportedValuesOf("currency");
-  } catch {
-    /* older runtimes */
-  }
-  let names: Intl.DisplayNames | null = null;
-  try {
-    names = new Intl.DisplayNames(["en"], { type: "currency" });
-  } catch {
-    names = null;
-  }
-  return [...COMMON, ...all.filter((c) => !COMMON.includes(c))].map((code) => ({ code, name: names?.of(code) ?? code }));
+  return CURRENCIES;
 }
 
 function sliderBackground(value: number, max: number): string {
