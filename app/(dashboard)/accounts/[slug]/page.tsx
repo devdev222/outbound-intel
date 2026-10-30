@@ -3,6 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ApproveFollowUp } from "@/components/bdr/ApproveFollowUp";
 import { AssignRep } from "@/components/bdr/AssignRep";
+import { BuyingGroupCard } from "@/components/bdr/BuyingGroupCard";
+import { coverageView } from "@/lib/engine/contact-commands";
 import { ConversationPanel } from "@/components/bdr/ConversationPanel";
 import { ActivityTimeline } from "@/components/dashboard/ActivityTimeline";
 import { AlertCard } from "@/components/dashboard/AlertCard";
@@ -82,6 +84,7 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
     repCol.list(),
     proofStories.list(),
   ]);
+  const group = account.buyingGroup ? await coverageView(store, account) : null;
 
   const verified = account.signals.filter((s) => s.status === "verified" && s.type !== "intent").sort((x, y) => y.detectedAt.localeCompare(x.detectedAt));
   const intent = account.signals.filter((s) => s.type === "intent");
@@ -183,7 +186,7 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
           )}
         </Card>
 
-        <Card title="3 · What problem Wilson might solve">
+        <Card title="3 · What problem Wilson might solve" className={group ? "lg:col-span-2" : ""}>
           <div className="text-[14px] font-medium">{account.painHypothesis ?? "Pain hypothesis not written yet"}</div>
           {account.messagingAngle && (
             <blockquote className="mt-2 border-l-2 border-[var(--accent)] pl-3 text-[13px] text-[var(--text-2)]">{account.messagingAngle}</blockquote>
@@ -196,6 +199,9 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
           )}
         </Card>
 
+        {group ? (
+          <BuyingGroupCard view={group} panel={panelCtx} />
+        ) : (
         <Card id="contact" title="4 · Who to contact" hint={account.recommendedPersona ? `Persona: ${account.recommendedPersona}` : undefined}>
           {account.contactHold && (
             <div className="mb-2 rounded-md bg-[var(--warn-soft)] p-2 text-[12.5px]">
@@ -241,6 +247,7 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
             </div>
           )}
         </Card>
+        )}
 
         <Card title="5 · What to say" hint={latestAlert ? `From Jerry's latest alert (${fmtAgo(latestAlert.createdAt)})` : "Generated opener"}>
           <blockquote className="text-[13px] italic text-[var(--text-2)]">“{opener}”</blockquote>

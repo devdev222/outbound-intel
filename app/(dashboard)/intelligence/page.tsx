@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BuyingGroupPatterns } from "@/components/dashboard/BuyingGroupPatterns";
 import { RetrainButton } from "@/components/dashboard/RetrainButton";
 import { Badge, ButtonLink, Card, EmptyState, PageHeader, Synthetic, fmtDate } from "@/components/ui";
 import { requireRole } from "@/lib/auth";
@@ -151,6 +152,10 @@ export default async function IntelligencePage({ searchParams }: { searchParams:
             </ul>
           </Card>
         </div>
+      </div>
+
+      <div className="mb-6 grid gap-4 lg:grid-cols-2">
+        <BuyingGroupPatterns model={model?.buyingGroup} />
       </div>
 
       <div className="mb-6 grid gap-4 lg:grid-cols-2">

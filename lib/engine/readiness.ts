@@ -73,6 +73,10 @@ export function evaluateReadiness(account: Account, ctx: ReadinessContext): Read
       detail: `${e.lastError}${exhausted ? "; automatic retries stopped, fix the provider or enrich manually" : `; retry ${e.attempts}/${MAX_ENRICHMENT_ATTEMPTS} at ${e.nextAttemptAt?.slice(0, 16).replace("T", " ")}`}`,
     });
   }
+  if (account.buyingGroup) {
+    const g = account.buyingGroup;
+    checks.push({ key: "coverage", label: "Buying-group coverage", pass: g.selectedCount >= 1, detail: `${g.summary}${g.gaps.length ? "; outreach starts with the verified people and the gaps stay open" : ""}` });
+  }
   checks.push({ key: "crm", label: "CRM ownership", pass: !ctx.crmOwner, detail: ctx.crmOwner ? `owned by ${ctx.crmOwner} in the CRM` : "unowned in the CRM" });
   checks.push({ key: "suppression", label: "Not suppressed", pass: !ctx.suppressed, detail: ctx.suppressed ? "contact or domain is on the suppression list" : "no suppression match" });
 

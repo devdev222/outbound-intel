@@ -39,7 +39,8 @@ export function QueueRow({ item, tz }: { item: QueueItem; tz: string }) {
             <Badge tone={TONE[item.category]}>{CATEGORY_LABEL[item.category]}</Badge>
             {item.status === "hot" && <Badge tone="accent">hot</Badge>}
           </div>
-          <div className="text-[12.5px] text-[var(--text-2)]">{c ? `${c.name}, ${c.title}` : "No contact yet"}</div>
+          <div className="text-[12.5px] text-[var(--text-2)]">{item.taskContact ? `${item.taskContact.name}, ${item.taskContact.title} (${item.taskContact.role})` : c ? `${c.name}, ${c.title}` : "No contact yet"}</div>
+          {item.coverage && <div className="text-[11.5px] text-[var(--muted)]">Buying group: {item.coverage}</div>}
         </div>
         <div className="min-w-[200px] flex-[1.4] text-[12.5px]">
           <div className="line-clamp-2">

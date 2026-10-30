@@ -1,5 +1,5 @@
 import { INDUSTRIES, PERSONAS, SIGNAL_CATALOG, SIGNAL_BY_KEY } from "@/lib/engine/signal-catalog";
-import type { CompanyFacts, HistoricalRecord, JobPosting, NewsItem, PainEvidence, Person, TechStackItem } from "@/lib/types";
+import type { CompanyFacts, HistoricalContact, HistoricalRecord, JobPosting, NewsItem, PainEvidence, Person, TechStackItem } from "@/lib/types";
 import { daysAgoIso, makeRng, pickMany, pickOne, slugify } from "@/lib/util";
 
 /**
@@ -309,6 +309,10 @@ export function generateCompanies(count: number, seed: number): CompanyFacts[] {
 
     const personaTitles = pickMany(rng, PERSONAS.map((p) => p.title), 2 + Math.floor(rng() * 3));
     const people = personaTitles.map((t) => person(rng, t, domain));
+    // Buying group: 4-7 people per company. A separate stream keeps every other generated field unchanged.
+    const groupRng = makeRng(seed * 31 + out.length + 1);
+    const extra = pickMany(groupRng, PERSONAS.map((p) => p.title).filter((t) => !personaTitles.includes(t)), Math.max(0, 4 + Math.floor(groupRng() * 4) - people.length));
+    people.push(...extra.map((t) => person(groupRng, t, domain)));
 
     out.push({
       companyName: name,
@@ -367,9 +371,54 @@ export function generateHistorical(count: number, seed: number): HistoricalRecor
       firstTouchAt: daysAgoIso(firstTouchDays),
       outcomeAt: daysAgoIso(Math.max(5, firstTouchDays - 20 - Math.floor(rng() * 40))),
       source: "crm_export",
+      contacts: historicalGroup(makeRng(seed * 7919 + i + 1), outcome, employees, industry),
     });
   }
   return out;
+}
+
+/**
+ * Planted buying-group history (hidden ground truth, like PLANTED_LIFT): won
+ * deals usually involved an operational owner and the economic buyer, with a
+ * champion who engaged; larger companies needed more people; most stalled
+ * deals only ever reached one or two people.
+ */
+const GROUP_ROLE: Record<string, HistoricalContact["role"]> = {
+  "VP of Transportation": "operational_owner",
+  "Director of Logistics": "operational_owner",
+  "Director of Operations": "operational_owner",
+  "VP of Supply Chain": "economic_buyer",
+  COO: "economic_buyer",
+  CFO: "economic_buyer",
+  "Transportation Manager": "champion",
+  "Supply Chain Manager": "champion",
+  "Plant Manager": "champion",
+  "Procurement Manager": "supporting",
+  "Logistics Coordinator": "supporting",
+};
+
+function historicalGroup(rng: () => number, outcome: HistoricalRecord["outcome"], employees: number, industry: string): HistoricalContact[] {
+  const big = employees >= 1000 || (industry === "Automotive Parts" && employees >= 500);
+  const progressed = outcome === "won" || outcome === "meeting";
+  const size = progressed ? (big ? 4 + Math.floor(rng() * 3) : 3 + Math.floor(rng() * 2)) : 1 + Math.floor(rng() * (rng() < 0.3 ? 4 : 2));
+  const byRole = (role: HistoricalContact["role"]) => PERSONAS.filter((p) => GROUP_ROLE[p.title] === role);
+  const wanted: HistoricalContact["role"][] = progressed ? ["operational_owner", "champion", rng() < 0.8 ? "economic_buyer" : "supporting", "supporting", "champion", "economic_buyer"] : [pickOne(rng, ["champion", "supporting", "operational_owner", "champion"] as const), "supporting", "champion", "economic_buyer"];
+  return wanted.slice(0, size).map((role, i) => {
+    const persona = pickOne(rng, byRole(role));
+    const champion = role === "champion" && i < 3;
+    const influenced = progressed ? (role === "operational_owner" || champion || (role === "economic_buyer" && rng() < 0.75) || rng() < 0.25) : rng() < 0.1;
+    const replied = influenced || rng() < (progressed ? 0.2 : 0.05);
+    return {
+      role,
+      title: persona.title,
+      seniority: persona.seniority,
+      contactedOrder: i + 1,
+      replied,
+      influenced,
+      bookedMeeting: progressed && influenced && (role === "operational_owner" || role === "champion") && rng() < 0.6,
+      inWin: outcome === "won" && influenced,
+    };
+  });
 }
 
 /** Exposed for tests and the README: which keys the generator knows about. */

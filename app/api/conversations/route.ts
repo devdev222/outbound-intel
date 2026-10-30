@@ -13,10 +13,13 @@ export const maxDuration = 60;
 const Body = z.object({
   slug: z.string(),
   channel: z.enum(["call", "email", "linkedin", "meeting"]),
-  outcome: z.enum(["connected", "voicemail", "no_answer", "replied", "meeting_booked", "not_interested", "not_now", "wrong_contact"]),
+  outcome: z.enum(["connected", "voicemail", "no_answer", "replied", "meeting_booked", "not_interested", "not_now", "wrong_contact", "referred", "opted_out"]),
   notes: z.string().max(5000).default(""),
   pauseDays: z.number().int().min(1).max(365).optional(),
   callbackAt: z.iso.datetime().optional(),
+  /** The buying-group person the rep spoke with (defaults to the primary contact). */
+  contactId: z.string().min(1).max(200).optional(),
+  referral: z.object({ name: z.string().min(1).max(200), title: z.string().min(1).max(200), email: z.email().optional(), linkedin: z.string().max(400).optional() }).optional(),
   /** Idempotency key from the client; a retried submission returns the original conversation. */
   requestId: z.string().min(8).max(200).optional(),
 });
@@ -31,7 +34,7 @@ export async function POST(req: Request) {
   const run = async () => {
     const found = await requireAccount(store, body.data.slug);
     if ("response" in found) return found.response;
-    const conversation = await logConversation(store, getProviders(), found.account, { channel: body.data.channel, outcome: body.data.outcome, notes: body.data.notes, repId: auth.user.repId ?? null, pauseDays: body.data.pauseDays, callbackAt: body.data.callbackAt }, auth.user);
+    const conversation = await logConversation(store, getProviders(), found.account, { channel: body.data.channel, outcome: body.data.outcome, notes: body.data.notes, repId: auth.user.repId ?? null, pauseDays: body.data.pauseDays, callbackAt: body.data.callbackAt, contactId: body.data.contactId ?? null, referral: body.data.referral ?? null }, auth.user);
     if (auth.actor.kind === "machine") await audit(auth.actor, "conversation_log", found.account.id, body.data.outcome);
     return json({ ok: true, conversation });
   };

@@ -81,6 +81,109 @@ export interface FieldSource {
   at: string;
 }
 
+// ---------------------------------------------------------------------------
+// Buying group (several people per account, each with an independent lifecycle)
+// ---------------------------------------------------------------------------
+
+/**
+ * economic_buyer: owns budget and the final yes (CFO, COO, VP Supply Chain).
+ * operational_owner: owns the shipping work Cartage takes over (VP/Director of Transportation or Logistics).
+ * champion: feels the pain daily and can carry the case internally (Supply Chain / Logistics / Plant Manager).
+ * supporting: influences or gates the evaluation (Procurement, Coordinator, IT, Finance analyst).
+ */
+export type BuyingRole = "economic_buyer" | "operational_owner" | "champion" | "supporting";
+
+export type ContactStatus = "candidate" | "selected" | "paused" | "rejected" | "replaced" | "opted_out";
+
+export interface VerificationCheck {
+  ok: boolean;
+  source: string;
+  at: string;
+  detail: string;
+}
+
+export interface ContactVerification {
+  /** Currently works at the account (source and date of the evidence). */
+  employment: VerificationCheck | null;
+  email: VerificationCheck | null;
+  phone: VerificationCheck | null;
+  /** Evidence younger than the freshness window. */
+  fresh: boolean;
+  /** Another contact on the account is the same person. */
+  duplicateOf: string | null;
+  suppressed: boolean;
+  checkedAt: string | null;
+  attempts: number;
+  nextAttemptAt: string | null;
+  lastError: string | null;
+  problems: string[];
+}
+
+export interface BuyingContact {
+  /** Stable contact id used across tasks, events, conversations, outcomes and CRM sync. */
+  id: string;
+  accountId: string;
+  person: Person;
+  role: BuyingRole;
+  roleConfidence: number;
+  /** Why we think this person plays this role (title, responsibilities, sources). */
+  roleEvidence: string[];
+  relationship: "decision_maker" | "influencer" | "user" | "referrer" | "unknown";
+  status: ContactStatus;
+  verification: ContactVerification;
+  /** Individual readiness: verified enough to contact. */
+  ready: boolean;
+  blockers: string[];
+  /** Why this person was selected for the group (shown to reps). */
+  selectedReason: string | null;
+  outreach: { order: number | null; startDay: number | null; touchesSent: number; lastTouchAt: string | null; heldReason: string | null; heldUntil?: string | null };
+  engagement: { score: number; lastEventAt: string | null; replied: boolean; meeting: boolean; optedOut: boolean };
+  source: "research" | "rep" | "import" | "referral" | "legacy";
+  referredBy?: string | null;
+  replaces?: string | null;
+  replacedBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Which roles to contact, how many people, and in what order (with day offsets). */
+export interface BuyingGroupPlan {
+  targetSize: number;
+  /** Roles in outreach order; a role may repeat when evidence supports two people in it. */
+  roles: BuyingRole[];
+  /** Day offset for each position in `roles`. */
+  stagger: number[];
+  source: "default" | "learned";
+  segment: string;
+  /** Plain-language evidence for this plan. Historical patterns are associations, not proven causes. */
+  evidence: string[];
+}
+
+export interface BuyingGroupCoverage {
+  plan: BuyingGroupPlan;
+  filled: { role: BuyingRole; contactId: string }[];
+  gaps: { role: BuyingRole; reason: string }[];
+  verifiedCount: number;
+  selectedCount: number;
+  summary: string;
+  updatedAt: string;
+}
+
+/** One person on a historical deal: contacted, and whether they actually helped it progress. */
+export interface HistoricalContact {
+  role: BuyingRole;
+  title: string;
+  seniority: Seniority;
+  /** Order in which they were first contacted (1 = first), null if never contacted. */
+  contactedOrder: number | null;
+  replied: boolean;
+  /** Took part in the evaluation (meetings, questions, internal advocacy). */
+  influenced: boolean;
+  bookedMeeting: boolean;
+  /** Present in a won deal. */
+  inWin: boolean;
+}
+
 /** A contact a rep marked as wrong; never re-selected for this account. */
 export interface RejectedContact {
   name: string;
@@ -420,6 +523,10 @@ export interface Account {
   enrichment?: EnrichmentState | null;
   /** Contacts a rep marked wrong; research never re-selects them. */
   rejectedContacts?: RejectedContact[];
+  /** Buying-group coverage (people live in the contacts store, keyed by accountId). */
+  buyingGroup?: BuyingGroupCoverage | null;
+  /** The contact mirrored into `contact` for single-contact views (the first selected, ready contact in plan order). */
+  primaryContactId?: string | null;
   /**
    * Set when the contact was marked wrong: contact-specific outreach is held and
    * the sequence is rebuilt for the next verified contact.
@@ -457,7 +564,8 @@ export type AgentId =
   | "campaign"
   | "video"
   | "jerry"
-  | "learning";
+  | "learning"
+  | "contacts";
 
 /**
  * Per-account audit trail: what the team (and reps) did to an account and why.
@@ -502,6 +610,40 @@ export interface AgentState {
 
 export type HistoricalOutcome = "won" | "lost" | "meeting" | "no_response";
 
+export interface RoleStat {
+  role: BuyingRole;
+  /** Deals where someone in this role was contacted. */
+  contacted: number;
+  replied: number;
+  influenced: number;
+  inWin: number;
+  replyRate: number;
+  /** Share of won deals that had someone in this role taking part. */
+  winPresence: number;
+}
+
+export interface SegmentBuyingGroup {
+  segment: string;
+  n: number;
+  wins: number;
+  roleStats: RoleStat[];
+  /** Role combinations among people who took part, with win rate (associations only). */
+  combos: { roles: BuyingRole[]; n: number; winRate: number }[];
+  /** Median number of people contacted before each milestone. */
+  contactsBefore: { reply: number | null; meeting: number | null; win: number | null };
+  /** Win rate by how many people were contacted. */
+  bySize: { size: number; n: number; winRate: number }[];
+  recommended: { size: number; roles: BuyingRole[]; rationale: string[] };
+}
+
+export interface BuyingGroupModel {
+  generatedAt: string;
+  overall: SegmentBuyingGroup;
+  segments: SegmentBuyingGroup[];
+  /** Always shown with the numbers: these are associations until a Lab experiment confirms them. */
+  caveat: string;
+}
+
 export interface HistoricalRecord {
   id: string;
   companyName: string;
@@ -517,6 +659,8 @@ export interface HistoricalRecord {
   outcomeAt: string;
   /** "crm_export" for the seed, "loop" for records fed back by the engine. */
   source: "crm_export" | "loop";
+  /** The buying group on the deal: who was contacted and who actually helped it progress. */
+  contacts?: HistoricalContact[];
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +722,8 @@ export interface ScoringModel {
   signalPatterns: SignalPattern[];
   icp: IcpProfile;
   playbook: Playbook;
+  /** Learned buying-group patterns (associations; see learnBuyingGroups). */
+  buyingGroup?: BuyingGroupModel;
   /** "Conversion" = won deal or booked meeting; wins counts closed-won only. */
   baseline: { n: number; wins: number; meetings: number; conversionRate: number };
   notes: string[];
@@ -661,6 +807,8 @@ export interface Outcome {
    * value never double.
    */
   opportunityId?: string | null;
+  /** The buying-group contact the outcome is attributed to, when known. */
+  contactId?: string | null;
 }
 
 export interface HotLeadAlert {
@@ -760,6 +908,8 @@ export interface OutreachTouch {
   /** provider = delivered through an adapter; manual = a person recorded it. */
   completionMode?: "provider" | "manual" | null;
   conversationId?: string | null;
+  /** The buying-group contact this task is for (null for account-level tasks). */
+  contactId?: string | null;
 }
 
 /** Tasks are the same records as outreach touches; the alias reads better in new code. */
@@ -841,7 +991,7 @@ export interface Rep {
 // ---------------------------------------------------------------------------
 
 export interface ReadinessCheck {
-  key: "icp_fit" | "decision_maker" | "contact" | "evidence" | "hypothesis" | "crm" | "suppression" | "enrichment" | "next_action";
+  key: "icp_fit" | "decision_maker" | "contact" | "evidence" | "hypothesis" | "crm" | "suppression" | "enrichment" | "coverage" | "next_action";
   label: string;
   pass: boolean;
   detail: string;
@@ -868,7 +1018,7 @@ export interface NextAction {
 // ---------------------------------------------------------------------------
 
 export type ConversationChannel = "call" | "email" | "linkedin" | "meeting";
-export type ConversationOutcome = "connected" | "voicemail" | "no_answer" | "replied" | "meeting_booked" | "not_interested" | "not_now" | "wrong_contact";
+export type ConversationOutcome = "connected" | "voicemail" | "no_answer" | "replied" | "meeting_booked" | "not_interested" | "not_now" | "wrong_contact" | "referred" | "opted_out";
 
 export interface Conversation {
   id: string;
@@ -883,6 +1033,8 @@ export interface Conversation {
   signalsExtracted: string[];
   followUpDraft: { subject: string; body: string } | null;
   followUpTouchId: string | null;
+  /** The buying-group contact the rep spoke with (defaults to the primary contact). */
+  contactId?: string | null;
   nextAction: NextAction | null;
   /** true once a human approved the follow-up / CRM update. */
   approved: boolean;

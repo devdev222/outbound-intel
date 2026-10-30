@@ -3,6 +3,7 @@ import type { Store } from "@/lib/store";
 import { getSettings, isSuppressed } from "@/lib/store/collections";
 import type { Account, OutreachTouch, Task } from "@/lib/types";
 import { nowIso } from "@/lib/util";
+import { ACCOUNT_LIMITS } from "./coordination";
 import { isPaused } from "./pause";
 import { deliverTask, MESSAGE_CHANNELS, providerCanSend, taskUrlFor } from "./tasks";
 
@@ -52,7 +53,21 @@ export async function processDueTouches(store: Store, providers: Providers, opts
       result.skipped++;
       continue;
     }
-    const sup = await isSuppressed(account.contact?.email, account.domain);
+    // Per-person lifecycle: a task for someone who opted out, was replaced or is held never goes out.
+    const person = task.contactId ? await store.getContact(task.contactId) : null;
+    if (person && ["rejected", "replaced", "opted_out"].includes(person.status)) {
+      await store.updateOutreach({ ...task, status: "skipped", note: `${person.person.name} is ${person.status.replace("_", " ")}` });
+      result.skipped++;
+      continue;
+    }
+    if (person?.status === "paused") {
+      const until = person.outreach.heldUntil && person.outreach.heldUntil > now ? person.outreach.heldUntil : new Date(Date.now() + 86_400_000).toISOString();
+      await store.updateOutreach({ ...task, scheduledFor: until, note: `held: ${person.outreach.heldReason ?? "coordinating the group"}` });
+      result.held++;
+      continue;
+    }
+    const recipient = person ? { ...account, contact: person.person } : account;
+    const sup = await isSuppressed(recipient.contact?.email, account.domain);
     if (sup && MESSAGE_CHANNELS.includes(task.channel)) {
       await store.updateOutreach({ ...task, status: "skipped", note: `suppressed: ${sup.reason}` });
       opts.activity?.(account.id, "touch_suppressed", `${task.title ?? `Step ${task.step}`} skipped: ${sup.target} is suppressed (${sup.reason})`);
@@ -63,6 +78,15 @@ export async function processDueTouches(store: Store, providers: Providers, opts
       await store.updateOutreach({ ...task, scheduledFor: account.pausedUntil!, note: `held: outreach paused until ${account.pausedUntil!.slice(0, 10)}` });
       result.held++;
       continue;
+    }
+    // Account-wide limits: never two people at the same company the same day, and a weekly cap.
+    if (MESSAGE_CHANNELS.includes(task.channel) && task.source === "sequence" && task.contactId) {
+      const wait = await spacingDelay(store, account.id, task);
+      if (wait) {
+        await store.updateOutreach({ ...task, scheduledFor: wait.until, note: `spaced: ${wait.reason}` });
+        result.held++;
+        continue;
+      }
     }
     // A sequence the Sequencer acknowledged is delivered there, not here.
     if (providers.outreach.ownsScheduling && task.source === "sequence" && providerCanSend(providers, task.channel)) continue;
@@ -88,6 +112,25 @@ export async function processDueTouches(store: Store, providers: Providers, opts
     } else if (r.state === "failed") result.failed++;
   }
   return result;
+}
+
+/**
+ * When a message to one person in a buying group would break the account-wide
+ * limits (someone else at the company already got one today, or the weekly cap
+ * is reached), the time it may go instead.
+ */
+export async function spacingDelay(store: Store, accountId: string, task: Task): Promise<{ until: string; reason: string } | null> {
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const sent = (await store.listOutreach({ accountId })).filter((t) => t.id !== task.id && MESSAGE_CHANNELS.includes(t.channel) && (t.status === "sent" || t.status === "sending") && (t.sentAt ?? t.scheduledFor) >= weekAgo);
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() + 1, 14)).toISOString();
+  const sameDay = sent.filter((t) => (t.sentAt ?? t.scheduledFor).slice(0, 10) === today);
+  if (sameDay.filter((t) => t.contactId !== task.contactId).length >= ACCOUNT_LIMITS.messagesPerDay) return { until: tomorrow, reason: "someone at this account already got a message today" };
+  if (sent.length >= ACCOUNT_LIMITS.messagesPerWeek) {
+    const oldest = sent.map((t) => t.sentAt ?? t.scheduledFor).sort()[0];
+    return { until: new Date(new Date(oldest).getTime() + 7 * 86_400_000 + 60_000).toISOString(), reason: `${ACCOUNT_LIMITS.messagesPerWeek} messages to this account in the last 7 days` };
+  }
+  return null;
 }
 
 /** A task left in `sending` (worker died mid-call) is reconciled from its operation record. */

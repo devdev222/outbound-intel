@@ -6,6 +6,7 @@ import { clamp, pointBiserial, round } from "@/lib/util";
 import { PRIOR_WEIGHTS, computeScores, type ScoreInput } from "./scoring";
 import { INDUSTRIES, PERSONAS, SIGNAL_CATALOG, SIZE_BANDS, signalLabel, signalType, sizeBandFor } from "./signal-catalog";
 
+import { learnBuyingGroups } from "./learn-buying-group";
 /**
  * LEARN step. Turns the historical book of business into a scoring model:
  *
@@ -308,6 +309,7 @@ export function computeModel(history: HistoricalRecord[], previous: ScoringModel
   const categoryCorrelations = computeCategoryCorrelations(history, provisional);
   const weights = blendWeights(PRIOR_WEIGHTS, categoryCorrelations, n);
   const playbook = templatePlaybook(history, signalPatterns, icp);
+  const buyingGroup = learnBuyingGroups(history);
 
   const notes: string[] = [
     `trained on ${n} historical records: ${wins} won, ${meetings} meetings, ${history.filter((r) => r.outcome === "lost").length} lost, ${history.filter((r) => r.outcome === "no_response").length} no response`,
@@ -339,7 +341,8 @@ export function computeModel(history: HistoricalRecord[], previous: ScoringModel
     icp,
     playbook,
     baseline: { n, wins, meetings, conversionRate: round(conversionRate, 4) },
-    notes,
+    notes: buyingGroup ? [...notes, `buying groups: ${buyingGroup.overall.n} deals with a recorded group; recommended ${buyingGroup.overall.recommended.size} people overall, ${buyingGroup.segments.length} segments with enough data (associations, not causes)`] : notes,
+    buyingGroup,
   };
 }
 

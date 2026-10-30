@@ -1,6 +1,7 @@
 import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
-import { attemptLaunch, launchCampaign, rebuildForNewContact } from "@/lib/engine/campaign";
+import { attemptLaunch, extendGroupOutreach, launchCampaign, launchContactSequences, rebuildForNewContact } from "@/lib/engine/campaign";
+import { liftExpiredHolds } from "@/lib/engine/coordination";
 import { holdCanClear } from "@/lib/engine/contact";
 import { proposeGifts } from "@/lib/engine/gifting";
 import { processDueTouches } from "@/lib/engine/outreach";
@@ -64,6 +65,14 @@ export const campaignAgent: AgentDefinition = {
       retried++;
     }
 
+    // Buying groups: lift expired holds, give new members (replacements, referrals, late verifications) their sequence, retry per-person launches.
+    const resumed = await liftExpiredHolds(ctx.store);
+    let extended = 0;
+    for (const a of all.filter((x) => x.buyingGroup && x.campaign?.launchState === "live" && !toLaunch.some((t) => t.id === x.id)).slice(0, ctx.batchSize * 2)) {
+      extended += await extendGroupOutreach(a, ctx);
+      await launchContactSequences(ctx.store, ctx.providers, a);
+    }
+
     const pauseSynced = await retryPauseSyncs(ctx.store, ctx.providers);
     const due = await processDueTouches(ctx.store, ctx.providers, { log: ctx.log, activity: ctx.activity });
 
@@ -78,6 +87,8 @@ export const campaignAgent: AgentDefinition = {
     const parts = [settings.automation.autoLaunchCampaigns ? `${toLaunch.length} campaigns built (${launchedLive} live, ${launchPending} launch pending)` : "campaign launch paused by automation settings"];
     if (retried) parts.push(`${retried} launch retries`);
     if (rebuilt) parts.push(`${rebuilt} sequences rebuilt for new contacts`);
+    if (extended) parts.push(`${extended} people added to running outreach`);
+    if (resumed) parts.push(`${resumed} held contacts resumed`);
     if (pauseSynced) parts.push(`${pauseSynced} pause syncs recovered`);
     if (proposed) parts.push(`${proposed} gifts proposed`);
     if (due.sent) parts.push(`${due.sent} tasks delivered via ${ctx.providers.outreach.name}`);

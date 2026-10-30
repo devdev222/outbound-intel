@@ -3,6 +3,7 @@ import path from "node:path";
 import { EXPECTED_SCHEMA_VERSION, normalizeTaskStatus } from "./schema";
 import type {
   Account,
+  BuyingContact,
   ActivityEntry,
   AgentId,
   AgentRun,
@@ -31,6 +32,7 @@ export type Collection =
   | "agent_runs"
   | "agent_state"
   | "operations"
+  | "contacts"
   | `docs_${string}`;
 
 /**
@@ -139,6 +141,41 @@ export class FileStore implements Store {
       rows: [...rows, ...records],
       result: undefined,
     }));
+  }
+
+  async listContacts(opts: { accountId?: string; status?: BuyingContact["status"] | BuyingContact["status"][] } = {}): Promise<BuyingContact[]> {
+    let rows = await this.read<BuyingContact>("contacts");
+    if (opts.accountId) rows = rows.filter((c) => c.accountId === opts.accountId);
+    if (opts.status) {
+      const want = Array.isArray(opts.status) ? opts.status : [opts.status];
+      rows = rows.filter((c) => want.includes(c.status));
+    }
+    return rows.sort((a, b) => (a.outreach.order ?? 99) - (b.outreach.order ?? 99) || a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async getContact(id: string): Promise<BuyingContact | null> {
+    return (await this.read<BuyingContact>("contacts")).find((c) => c.id === id) ?? null;
+  }
+
+  upsertContact(contact: BuyingContact): Promise<BuyingContact> {
+    return this.mutate<BuyingContact, BuyingContact>("contacts", (rows) => {
+      const idx = rows.findIndex((c) => c.id === contact.id);
+      const next = { ...contact, updatedAt: new Date().toISOString() };
+      if (idx >= 0) rows[idx] = next;
+      else rows.push(next);
+      return { rows, result: next };
+    });
+  }
+
+  patchContact(id: string, fn: (current: BuyingContact) => BuyingContact | null): Promise<BuyingContact | null> {
+    return this.mutate<BuyingContact, BuyingContact | null>("contacts", (rows) => {
+      const idx = rows.findIndex((c) => c.id === id);
+      if (idx < 0) return { rows, result: null };
+      const next = fn(structuredClone(rows[idx]));
+      if (!next) return { rows, result: rows[idx] };
+      rows[idx] = { ...next, id, updatedAt: new Date().toISOString() };
+      return { rows, result: rows[idx] };
+    });
   }
 
   async getHistorical(id: string): Promise<HistoricalRecord | null> {
@@ -453,6 +490,7 @@ export class FileStore implements Store {
       "agent_runs",
       "agent_state",
       "operations",
+      "contacts",
     ];
     for (const c of all) await this.mutate<unknown, void>(c, () => ({ rows: [], result: undefined }));
   }

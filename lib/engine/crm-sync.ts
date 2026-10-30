@@ -4,6 +4,7 @@ import type { Account, Operation, Outcome } from "@/lib/types";
 import { nowIso } from "@/lib/util";
 import { logActivity } from "./activity";
 import { runOperation } from "./operations";
+import { recipientView } from "./tasks";
 
 /**
  * Durable CRM write-back. Each outcome is one operation `crm:<outcome id>`:
@@ -22,7 +23,8 @@ export async function syncOutcomeToCrm(store: Store, providers: Providers, accou
     return { state: "skipped" };
   }
   const r = await runOperation(store, { id: `crm:${outcome.id}`, kind: "crm_sync", accountId: account.id, destination: providers.crm.name, maxAttempts: MAX_CRM_ATTEMPTS }, async (key) => {
-    const res = await providers.crm.logOutcome(account, outcome, key);
+    // The CRM sees the person the outcome belongs to.
+    const res = await providers.crm.logOutcome(await recipientView(store, account, { contactId: outcome.contactId ?? null }), outcome, key);
     return { remoteId: res?.remoteId ?? null, result: { outcomeId: outcome.id, opportunityId: outcome.opportunityId ?? null } };
   });
   if (r.state === "succeeded") return { state: "synced" };

@@ -1,9 +1,11 @@
 import { config } from "@/lib/config";
 import type { Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
-import type { Account, EngagementEvent, EventSource, Signal } from "@/lib/types";
+import type { BuyingContact, Account, EngagementEvent, EventSource, Signal } from "@/lib/types";
 import { clamp, nowIso, uuid } from "@/lib/util";
 import { logActivity } from "./activity";
+import { resolveContact } from "./buying-group";
+import { coordinateSignal } from "./coordination";
 import { priorityFrom } from "./scoring";
 
 /**
@@ -160,6 +162,8 @@ export interface RecordEngagementInput {
   visitorId?: string | null;
   /** Where the event came from. Defaults to "internal" (platform or signed-in user). */
   source?: EventSource;
+  /** The buying-group contact; otherwise resolved from the task (touchId), contactId or an email/LinkedIn personRef. */
+  contactId?: string | null;
 }
 
 /** Events the public page may report. Everything else must arrive authenticated. */
@@ -199,6 +203,24 @@ export interface RecordEngagementResult {
   reason: string | null;
 }
 
+const REPLY_EVENTS = new Set(["email_reply", "linkedin_reply"]);
+
+/** Which person an event belongs to: explicit id, the task it came from, or an email / LinkedIn reference. */
+async function attributeContact(store: Store, account: Account, input: RecordEngagementInput): Promise<BuyingContact | null> {
+  const p = input.properties ?? {};
+  const explicit = input.contactId ?? (typeof p.contactId === "string" ? p.contactId : null);
+  if (explicit) {
+    const c = await store.getContact(explicit);
+    return c && c.accountId === account.id ? c : null;
+  }
+  if (typeof p.touchId === "string") {
+    const t = await store.getOutreach(p.touchId);
+    if (t?.contactId) return store.getContact(t.contactId);
+  }
+  const ref = [p.personRef, p.email, input.source !== "page" ? input.visitorId : null].find((x): x is string => typeof x === "string" && x.length > 2);
+  return ref ? resolveContact(store, account.id, ref) : null;
+}
+
 export async function recordEngagement(
   store: Store,
   providers: Providers,
@@ -208,11 +230,12 @@ export async function recordEngagement(
   const now = nowIso();
   const source: EventSource = input.source ?? "internal";
   const events: EngagementEvent[] = [];
+  const contact = await attributeContact(store, account, input);
   const base: EngagementEvent = {
     id: uuid(),
     accountId: account.id,
     eventType: input.eventType,
-    properties: { ...(input.properties ?? {}), _source: source },
+    properties: { ...(input.properties ?? {}), _source: source, ...(contact ? { contactId: contact.id } : {}) },
     visitorId: input.visitorId ?? null,
     createdAt: now,
   };
@@ -291,6 +314,13 @@ export async function recordEngagement(
       }
       return n;
     })) ?? account;
+
+  // Per-person engagement, and coordination across the group when someone replies or books.
+  if (contact) {
+    await store.patchContact(contact.id, (c) => ({ ...c, engagement: { ...c.engagement, score: c.engagement.score + delta, lastEventAt: now } }));
+    if (REPLY_EVENTS.has(input.eventType) && source !== "page") await coordinateSignal(store, providers, contact.id, { kind: "replied", detail: describeEvent(base) }, "engagement");
+    if (input.eventType === "meeting_booked" && source !== "page") await coordinateSignal(store, providers, contact.id, { kind: "meeting", detail: describeEvent(base) }, "engagement");
+  }
 
   if (activationTriggered) {
     await logActivity(store, next.id, "system", "activation_flagged", `Engagement crossed the threshold: ${reason}`, [

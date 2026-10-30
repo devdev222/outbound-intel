@@ -9,6 +9,7 @@ import { endOfDayIso, validTimezone } from "@/lib/time";
 import { getPlaybook } from "./playbook";
 import { rankProof } from "./proof";
 import { OPEN_STATUSES, type TaskAction, primaryActionFor } from "./tasks";
+import { ROLE_LABEL } from "./buying-group";
 
 /**
  * The BDR's day as ONE prioritized queue, one row per account.
@@ -60,6 +61,10 @@ export interface QueueItem {
   whyNow: string;
   signals: string[];
   contact: Account["contact"];
+  /** Buying-group person the primary task is for, with their role (null for the primary contact / account-level work). */
+  taskContact: { id: string; name: string; title: string; role: string } | null;
+  /** Buying-group coverage, e.g. "3 of 4 roles covered; missing economic buyer". */
+  coverage: string | null;
   opener: string;
   painHypothesis: string | null;
   angle: string | null;
@@ -146,13 +151,15 @@ function attentionFor(a: Account, alert: Alert | undefined, failedTasks: Task[])
 
 export async function buildWorkQueue(store: Store, providers: Providers, repId: string | null): Promise<WorkQueue> {
   const settings = await getSettings();
-  const [accounts, alerts, openTasks, convs, stories] = await Promise.all([
+  const [accounts, alerts, openTasks, convs, stories, contacts] = await Promise.all([
     store.listAccounts(),
     store.listAlerts({ limit: 1000 }),
     store.listOutreach({ status: OPEN_STATUSES, limit: 5000 }),
     convCol.list(),
     proofStories.list(),
+    store.listContacts({ status: ["selected", "paused"] }),
   ]);
+  const contactById = new Map(contacts.map((c) => [c.id, c]));
   const objections = (await getPlaybook()).objections.slice(0, 4).map((o) => ({ objection: o.objection, response: o.response }));
   const now = nowIso();
   const rep = repId ? await reps.get(repId) : null;
@@ -236,6 +243,12 @@ export async function buildWorkQueue(store: Store, providers: Providers, repId: 
       whyNow: whyNowFor(a, alert),
       signals: a.signals.filter((s) => s.status === "verified").map((s) => s.label),
       contact: a.contact,
+      taskContact: (() => {
+        const id = primary.kind === "task" ? primary.item.task.contactId : null;
+        const bc = id ? contactById.get(id) : null;
+        return bc ? { id: bc.id, name: bc.person.name, title: bc.person.title, role: ROLE_LABEL[bc.role].toLowerCase() } : null;
+      })(),
+      coverage: a.buyingGroup?.summary ?? null,
       opener: openerFor(a, alert?.payload.talkTrack),
       painHypothesis: a.painHypothesis,
       angle: a.messagingAngle ?? a.campaign?.angle ?? null,

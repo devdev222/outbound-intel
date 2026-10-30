@@ -1,5 +1,6 @@
 import type {
   Account,
+  BuyingContact,
   ActivityEntry,
   AgentId,
   AgentRun,
@@ -49,6 +50,13 @@ export interface Store {
   /** Insert or replace ONE record by id (outcome feedback). Never rewrites other rows. */
   upsertHistorical(record: HistoricalRecord): Promise<void>;
   getHistorical(id: string): Promise<HistoricalRecord | null>;
+
+  // Buying-group contacts (one row per person per account; stable ids)
+  listContacts(opts?: { accountId?: string; status?: BuyingContact["status"] | BuyingContact["status"][] }): Promise<BuyingContact[]>;
+  getContact(id: string): Promise<BuyingContact | null>;
+  upsertContact(contact: BuyingContact): Promise<BuyingContact>;
+  /** Atomic read-modify-write of one contact (same guarantees as patchAccount). */
+  patchContact(id: string, fn: (current: BuyingContact) => BuyingContact | null): Promise<BuyingContact | null>;
   /** Administrative full replacement (CRM re-import / demo seed only). */
   replaceHistorical(records: HistoricalRecord[]): Promise<void>;
 
