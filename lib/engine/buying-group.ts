@@ -1,11 +1,12 @@
 import { config } from "@/lib/config";
-import type { Providers } from "@/lib/providers";
+import type { EnrichmentResult, Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
 import { isSuppressed } from "@/lib/store/collections";
 import type { Account, BuyingContact, BuyingGroupCoverage, BuyingGroupPlan, BuyingRole, ContactVerification, Person, ScoringModel, SegmentBuyingGroup } from "@/lib/types";
 import { deterministicUuid, nowIso } from "@/lib/util";
 import { logActivity } from "./activity";
 import { isPhoneVerified, isRejected, mergeContact, samePerson } from "./contact-fields";
+import { reserveLookup } from "./budget";
 import { backoffMs } from "./operations";
 import { sizeBandFor } from "./signal-catalog";
 
@@ -189,15 +190,25 @@ export function verifyDue(c: BuyingContact, at = nowIso()): boolean {
  * duplicates within the account, and suppression. Failures are recorded with
  * a bounded retry; synthetic data never counts as verified in live mode.
  */
-export async function verifyContact(store: Store, providers: Providers, account: Account, contact: BuyingContact): Promise<BuyingContact> {
+export async function verifyContact(store: Store, providers: Providers, account: Account, contact: BuyingContact, preset?: EnrichmentResult): Promise<BuyingContact> {
   const at = nowIso();
   let person = contact.person;
   let enrichError: string | null = null;
   let provider: string = providers.enrichment.name;
   let synthetic = false;
+  // Budget: a paid lookup waits for the cap to reset instead of spending (a callback result is already paid for).
+  if (!preset) {
+    const source = config.jerry.mode === "mcp" ? "jerry-mcp" : providers.enrichment.name;
+    const budget = await reserveLookup(source);
+    if (!budget.ok) {
+      const blocker = `waiting for enrichment budget: ${budget.reason}; resumes ${budget.retryAt.slice(0, 10)}`;
+      return (await store.patchContact(contact.id, (cur) => ({ ...cur, verification: { ...cur.verification, lastError: budget.reason, nextAttemptAt: budget.retryAt }, ready: cur.ready && Boolean(cur.verification.checkedAt), blockers: cur.ready ? cur.blockers : [blocker] }))) ?? contact;
+    }
+  }
   try {
-    const res = config.jerry.mode === "mcp" ? await (await import("@/lib/agents/jerry-mcp")).jerryMcp.enrichContactOrThrow(person, account) : await providers.enrichment.enrichContact(person, account);
-    provider = config.jerry.mode === "mcp" ? "jerry-mcp" : res.provider;
+    // A preset result is an asynchronous provider's callback (e.g. Wiza); no second paid lookup.
+    const res = preset ?? (config.jerry.mode === "mcp" ? await (await import("@/lib/agents/jerry-mcp")).jerryMcp.enrichContactOrThrow(person, account) : await providers.enrichment.enrichContact(person, account, { contactId: contact.id }));
+    provider = preset ? preset.provider : config.jerry.mode === "mcp" ? "jerry-mcp" : res.provider;
     synthetic = res.provenance === "synthetic";
     person = mergeContact(person, { name: res.contact.name, title: res.contact.title, email: res.contact.email, phone: res.contact.phone, linkedin: res.contact.linkedin, phoneVerified: res.phoneVerified === true }, synthetic ? "synthetic" : provider);
     if (synthetic) person = { ...person, verifiedBy: "synthetic" };
@@ -318,12 +329,35 @@ export async function applyCoverage(store: Store, account: Account, coverage: Bu
   );
 }
 
+/**
+ * Who to verify, and in what order: only as many people per planned role as
+ * the plan still needs (selected people first, then the most likely fit), so
+ * paid lookups are spent on the group, not on every name at the company.
+ * People in roles the plan does not use are not verified until a role opens.
+ */
+export function verificationQueue(all: BuyingContact[], plan: BuyingGroupPlan, at = nowIso()): BuyingContact[] {
+  const usable = all.filter((c) => !["rejected", "replaced", "opted_out"].includes(c.status));
+  const out: BuyingContact[] = [];
+  for (const role of [...new Set(plan.roles)]) {
+    const seats = plan.roles.filter((r) => r === role).length;
+    // A person whose check was reset (a rep asked to research again) needs re-verifying even if still marked ready.
+    const current = (c: BuyingContact) => c.ready && Boolean(c.verification.checkedAt);
+    const ready = usable.filter((c) => c.role === role && current(c)).length;
+    const need = Math.max(0, seats - ready);
+    const queue = usable
+      .filter((c) => c.role === role && !current(c) && verifyDue(c, at))
+      .sort((a, b) => RANK_STATUS(a) - RANK_STATUS(b) || b.roleConfidence - a.roleConfidence);
+    out.push(...queue.slice(0, need));
+  }
+  return out;
+}
+
 /** Research -> verify -> select for one account. Returns the updated account. */
 export async function buildBuyingGroup(store: Store, providers: Providers, account: Account, model: ScoringModel | null, opts: { verifyLimit?: number } = {}): Promise<{ account: Account; selected: BuyingContact[]; coverage: BuyingGroupCoverage; verified: number }> {
   await mapCandidates(store, account);
   const plan = planFor(account, model);
   let verified = 0;
-  const due = (await store.listContacts({ accountId: account.id })).filter((c) => verifyDue(c)).sort((a, b) => plan.roles.indexOf(a.role) - plan.roles.indexOf(b.role));
+  const due = verificationQueue(await store.listContacts({ accountId: account.id }), plan);
   for (const c of due.slice(0, opts.verifyLimit ?? 8)) {
     const v = await verifyContact(store, providers, account, c);
     if (v.ready) verified++;
@@ -350,13 +384,16 @@ export async function replaceContact(store: Store, providers: Providers, contact
   for (const t of await store.listOutreach({ accountId: c.accountId })) {
     if (t.contactId === contactId && ["awaiting_approval", "scheduled", "manual", "failed"].includes(t.status)) await store.updateOutreach({ ...t, status: "skipped", note: `Held: ${c.person.name} marked wrong (${reason})` });
   }
-  const { coverage, selected } = await selectGroup(store, account, account.buyingGroup?.plan ?? planFor(account, model));
+  const plan = account.buyingGroup?.plan ?? planFor(account, model);
+  // Refill the role now: verify the best backup for it (one lookup) if nobody verified is waiting.
+  const backup = verificationQueue(await store.listContacts({ accountId: account.id }), plan).find((x) => x.role === c.role);
+  if (backup) await verifyContact(store, providers, account, backup);
+  const { coverage, selected } = await selectGroup(store, account, plan);
   const updated = await applyCoverage(store, account, coverage, selected);
   const replacement = selected.find((s) => s.role === c.role && s.id !== c.id) ?? null;
   if (replacement) await store.patchContact(contactId, (cur) => ({ ...cur, status: "replaced", replacedBy: replacement.id }));
   if (replacement) await store.patchContact(replacement.id, (cur) => ({ ...cur, replaces: contactId }));
   await logActivity(store, c.accountId, "rep", "contact_replaced", `${by} marked ${c.person.name} (${ROLE_LABEL[c.role].toLowerCase()}) wrong${replacement ? `; ${replacement.person.name} takes the role` : "; researching a replacement"}`, [reason, coverage.summary]);
-  void providers;
   return { account: updated, replacement };
 }
 

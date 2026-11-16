@@ -179,6 +179,10 @@ export async function coordinateSignal(store: Store, providers: Providers, conta
       break;
     }
   }
+  // Providers that run their own cadence but cannot pause one lead (Amplemarket sequences): ask a rep to do it.
+  const stopped = signal.kind === "replied" ? others.filter((o) => o.status === "selected") : signal.kind === "meeting" ? [contact, ...others] : signal.kind === "referred" ? [] : [contact];
+  const pauseTask = await askToPauseInProvider(store, providers, account, stopped, `${contact.person.name}: ${signal.kind.replace("_", " ")}`);
+  if (pauseTask) changed.push(pauseTask);
   await logActivity(store, account.id, "system", `contact_${signal.kind}`, `${contact.person.name}: ${signal.kind.replace("_", " ")}${by ? ` (${by})` : ""}`, changed);
   return { contact: await store.getContact(contactId), changed };
 }
@@ -202,6 +206,40 @@ async function insertCoordinationTask(store: Store, account: Account, contact: B
       lastError: null,
     },
   ]);
+}
+
+/**
+ * When the outreach provider runs each person's sequence itself and cannot
+ * pause one person, the engine's hold would be invisible to it. Create one rep
+ * task naming everyone to pause there, so the group does not keep getting
+ * messages after a reply, a meeting, an opt-out or a wrong contact.
+ */
+export async function askToPauseInProvider(store: Store, providers: Providers, account: Account, people: BuyingContact[], why: string): Promise<string | null> {
+  const p = providers.outreach;
+  if (!p.ownsScheduling || p.pausesLeads !== false || !people.length) return null;
+  const tasks = await store.listOutreach({ accountId: account.id });
+  const handedOver = people.filter((c) => tasks.some((t) => t.contactId === c.id && t.provider === p.name));
+  if (!handedOver.length) return null;
+  const names = handedOver.map((c) => c.person.name);
+  await store.insertOutreach([
+    {
+      id: uuid(),
+      accountId: account.id,
+      contactId: handedOver.length === 1 ? handedOver[0].id : null,
+      channel: "email",
+      step: 98,
+      body: `${why}. ${p.name}'s API cannot pause one person, so their sequence keeps running.\n\nPause or remove in ${p.name}: ${names.join(", ")}.\nThen mark this task done.`,
+      status: "manual",
+      scheduledFor: nowIso(),
+      provider: "pending",
+      source: "rep",
+      title: `Pause ${names.length === 1 ? names[0].split(" ")[0] : `${names.length} people`} in ${p.name}`,
+      assigneeRepId: account.ownerRepId ?? null,
+      attempts: 0,
+      lastError: null,
+    },
+  ]);
+  return `rep asked to pause ${names.join(", ")} in ${p.name}`;
 }
 
 /** Resume a held person (rep decision, or automatically once the hold window ends). */

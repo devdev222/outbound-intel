@@ -58,6 +58,8 @@ export interface RecordOutcomeInput {
   opportunityId?: string | null;
   /** The buying-group contact the outcome belongs to (defaults to the primary contact). */
   contactId?: string | null;
+  /** false when the outcome came from the CRM itself (writing it back would loop). */
+  syncToCrm?: boolean;
 }
 
 const OPPORTUNITY_TYPES: OutcomeType[] = ["opportunity_created", "deal_won", "deal_lost"];
@@ -113,7 +115,7 @@ export async function recordOutcome(
   await store.insertOutcome(outcome);
 
   // Durable CRM write-back (operation crm:<outcome id>); failures retry and stay visible.
-  await syncOutcomeToCrm(store, providers, account, outcome);
+  if (input.syncToCrm !== false) await syncOutcomeToCrm(store, providers, account, outcome);
 
   let fedBack = false;
   const histOutcome = HISTORY_OUTCOME[input.outcomeType];

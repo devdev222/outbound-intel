@@ -54,7 +54,8 @@ export interface EnrichmentResult {
 
 export interface EnrichmentProvider {
   readonly name: string;
-  enrichContact(person: Person, account: Account): Promise<EnrichmentResult>;
+  /** opts.contactId lets asynchronous providers route their callback to the right buying-group person. */
+  enrichContact(person: Person, account: Account, opts?: { contactId?: string }): Promise<EnrichmentResult>;
 }
 
 // Video ----------------------------------------------------------------------
@@ -111,12 +112,17 @@ export interface OutreachProvider {
    */
   readonly ownsScheduling: boolean;
   /**
+   * false when the provider runs its own cadence but its API cannot pause one
+   * person (Amplemarket). The engine then asks a rep to pause them by hand.
+   */
+  readonly pausesLeads?: boolean;
+  /**
    * Register a sequence. Must throw on failure (the campaign then stays pending/failed,
    * never live). `idempotencyKey` is stable across retries of the same launch.
    */
   launchSequence(account: Account, touches: OutreachTouch[], idempotencyKey: string): Promise<LaunchResult>;
   /** Send one due touch now (only for channels in `channels`). Same key on every retry of this touch. */
-  sendTouch(account: Account, touch: OutreachTouch, idempotencyKey: string): Promise<SendResult>;
+  sendTouch(account: Account, touch: OutreachTouch, idempotencyKey: string, ctx?: { personStep?: number }): Promise<SendResult>;
   /** Adapt the remaining touches after an engagement signal (providers that own scheduling). */
   adaptSequence(account: Account, reason: string): Promise<{ adapted: boolean; note: string }>;
   /** Stop all sends for the account until `until` (providers that own scheduling). */
@@ -164,6 +170,8 @@ export interface CrmProvider {
    * honored so retries never duplicate; outcome.id is the stable external id.
    */
   logOutcome(account: Account, outcome: Outcome, idempotencyKey?: string): Promise<{ remoteId?: string | null } | void>;
+  /** Who already owns this account in the CRM (name), or null. Readiness keeps owned accounts out of the queue. */
+  ownerOf?(account: Account): Promise<string | null>;
 }
 
 // Bundle ---------------------------------------------------------------------

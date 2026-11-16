@@ -64,15 +64,15 @@ export const config = {
   },
 
   providers: {
-    discovery: pick("DISCOVERY_PROVIDER", ["mock", "clay"] as const, "mock"),
+    discovery: pick("DISCOVERY_PROVIDER", ["mock", "clay", "amplemarket"] as const, "mock"),
     /** Data source Jerry uses as a tool to verify phones / match LinkedIn. Jerry itself is an agent, not a provider. */
-    enrichment: pick("ENRICHMENT_PROVIDER", ["mock", "clay", "http", "test"] as const, "mock"),
+    enrichment: pick("ENRICHMENT_PROVIDER", ["mock", "clay", "http", "test", "wiza", "amplemarket", "waterfall"] as const, "mock"),
     video: pick("VIDEO_PROVIDER", ["mock", "tavus"] as const, "mock"),
-    outreach: pick("OUTREACH_PROVIDER", ["mock", "resend", "sequencer", "test"] as const, "mock"),
-    dialer: pick("DIALER_PROVIDER", ["mock", "cartage", "test"] as const, "mock"),
+    outreach: pick("OUTREACH_PROVIDER", ["mock", "resend", "sequencer", "test", "amplemarket"] as const, "mock"),
+    dialer: pick("DIALER_PROVIDER", ["mock", "cartage", "test", "trellus"] as const, "mock"),
     analytics: pick("ANALYTICS_PROVIDER", ["none", "posthog"] as const, "none"),
     alerts: pick("ALERT_PROVIDER", ["console", "slack", "test"] as const, "console"),
-    crm: pick("CRM_PROVIDER", ["mock", "http", "test"] as const, "mock"),
+    crm: pick("CRM_PROVIDER", ["mock", "http", "test", "attio"] as const, "mock"),
   },
 
   /**
@@ -149,6 +149,68 @@ export const config = {
   },
   slack: { webhookUrl: env("SLACK_WEBHOOK_URL"), botToken: env("SLACK_BOT_TOKEN"), channel: env("SLACK_CHANNEL") },
   crm: { exportUrl: env("CRM_EXPORT_URL"), apiKey: env("CRM_API_KEY") },
+
+  // --- Sales stack (docs/SALES_STACK.md) -------------------------------------------
+  attio: {
+    apiKey: env("ATTIO_API_KEY"),
+    /** HMAC secret returned once when the webhook is created (POST /v2/webhooks). */
+    webhookSecret: env("ATTIO_WEBHOOK_SECRET"),
+    /** A unique text attribute on Deals that holds our opportunity id (create it in Attio first). */
+    dealMatchAttribute: env("ATTIO_DEAL_MATCH_ATTRIBUTE", "external_deal_id"),
+    /** Deal owner when the rep has no Attio seat (deal owner is required). */
+    defaultOwnerEmail: env("ATTIO_DEFAULT_OWNER_EMAIL"),
+    /** Optional custom actor-reference attribute on Companies that names the account owner. */
+    companyOwnerAttribute: env("ATTIO_COMPANY_OWNER_ATTRIBUTE"),
+    /** JSON: our outcome type -> Attio deal stage title. */
+    stageMap: env("ATTIO_STAGE_MAP"),
+    /** JSON: Attio deal stage title -> won | meeting | lost | no_response (for learning). */
+    stageOutcomes: env("ATTIO_STAGE_OUTCOMES"),
+  },
+  amplemarket: {
+    apiKey: env("AMPLEMARKET_API_KEY"),
+    /** Default sequence every buying-group person is added to. */
+    sequenceId: env("AMPLEMARKET_SEQUENCE_ID"),
+    /** Optional JSON: buying role -> sequence id, e.g. {"economic_buyer":"seq_..."}. */
+    sequenceByRole: env("AMPLEMARKET_SEQUENCE_BY_ROLE"),
+    /** Shared secret in the JSON-push URL (?token=...). Amplemarket does not sign payloads. */
+    webhookSecret: env("AMPLEMARKET_WEBHOOK_SECRET"),
+    /** JSON filters for POST /people/search (discovery). */
+    searchFilters: env("AMPLEMARKET_SEARCH_FILTERS"),
+    /**
+     * sequence: Amplemarket runs a full sequence per person (its own timing; holds become rep tasks).
+     * steps: the engine times every touch and hands each one to a one-step Amplemarket sequence,
+     * so holds, pauses, approvals and account-wide limits apply to Amplemarket email too.
+     */
+    mode: pick("AMPLEMARKET_MODE", ["sequence", "steps"] as const, "sequence"),
+    /** steps mode: one-step sequence ids in order (touch 1 uses the first, touch 2 the second...; the last repeats). */
+    stepSequenceIds: env("AMPLEMARKET_STEP_SEQUENCE_IDS")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean),
+    /** Pull Amplemarket's exclusion list into suppressions and push ours to it (needs AMPLEMARKET_API_KEY). */
+    syncExclusions: env("AMPLEMARKET_SYNC_EXCLUSIONS", "true") === "true",
+    /** Reveal phone numbers on enrichment (1 phone credit each). */
+    revealPhones: env("AMPLEMARKET_REVEAL_PHONES", "false") === "true",
+  },
+  wiza: {
+    apiKey: env("WIZA_API_KEY"),
+    /** none | partial (email) | phone | full (email + phone). */
+    enrichmentLevel: pick("WIZA_ENRICHMENT_LEVEL", ["partial", "phone", "full"] as const, "full"),
+    /** How long enrichContact polls before handing off to the callback. */
+    pollSeconds: envNumber("WIZA_POLL_SECONDS", 20),
+  },
+  trellus: {
+    apiKey: env("TRELLUS_API_KEY"),
+    /** How far back each call-data sync looks. */
+    syncHours: envNumber("TRELLUS_SYNC_HOURS", 24),
+  },
+  /** Paid verification lookups allowed per UTC day / month (0 = no cap). Mock and test providers are free. */
+  enrichmentBudget: { daily: envNumber("ENRICHMENT_DAILY_LIMIT", 100), monthly: envNumber("ENRICHMENT_MONTHLY_LIMIT", 2000) },
+  /** Ordered enrichment sources for ENRICHMENT_PROVIDER=waterfall. */
+  enrichmentWaterfall: env("ENRICHMENT_WATERFALL", "wiza,amplemarket")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean),
   rb2b: { webhookSecret: env("RB2B_WEBHOOK_SECRET") },
   calendly: {
     url: env("NEXT_PUBLIC_CALENDLY_URL"),
