@@ -8,6 +8,10 @@ import { getLlmClient, LLM_MODEL } from "@/lib/llm";
 import { getProviders } from "@/lib/providers";
 import { httpJson } from "@/lib/providers/http";
 import { getStore } from "@/lib/store";
+import { testAmplemarket } from "@/lib/providers/vendors/amplemarket";
+import { testAttio } from "@/lib/providers/vendors/attio";
+import { testTrellus } from "@/lib/providers/vendors/trellus";
+import { testWiza } from "@/lib/providers/vendors/wiza";
 import { EXPECTED_SCHEMA_VERSION } from "@/lib/store/schema";
 import type { HotLeadAlert } from "@/lib/types";
 import { nowIso } from "@/lib/util";
@@ -62,6 +66,16 @@ async function runTest(id: string, to: string | undefined): Promise<{ ok: boolea
     }
     case "jerry":
     case "enrichment": {
+      if (id === "enrichment" && config.jerry.mode !== "mcp") {
+        // Read-only checks for each source in use; nothing is revealed and no credits are spent.
+        const ids = config.providers.enrichment === "waterfall" ? config.enrichmentWaterfall : [config.providers.enrichment];
+        const parts: string[] = [];
+        for (const src of ids) {
+          if (src === "wiza") parts.push(`wiza: ${(await testWiza()).message}`);
+          else if (src === "amplemarket") parts.push(`amplemarket: ${(await testAmplemarket()).message}`);
+        }
+        return parts.length ? { ok: true, message: parts.join("; ") } : { ok: false, message: `no connection test for ${config.providers.enrichment}` };
+      }
       if (config.jerry.mode !== "mcp") return { ok: false, message: "JERRY_MODE is not mcp" };
       return jerryMcp.test();
     }
@@ -86,6 +100,7 @@ async function runTest(id: string, to: string | undefined): Promise<{ ok: boolea
       return { ok: r.delivered, message: r.delivered ? `delivered via ${r.via}` : `not delivered via ${r.via}: ${r.note ?? "unknown"}` };
     }
     case "outreach": {
+      if (config.providers.outreach === "amplemarket") return testAmplemarket();
       if (config.providers.outreach !== "resend") return { ok: false, message: `active outreach provider is ${config.providers.outreach}; only Resend has a test` };
       if (!config.resend.apiKey || !config.resend.from) return { ok: false, message: "RESEND_API_KEY / RESEND_FROM not set" };
       const recipient = to ?? config.resend.testTo;
@@ -120,6 +135,7 @@ async function runTest(id: string, to: string | undefined): Promise<{ ok: boolea
       return { ok: true, message: "test event accepted (check PostHog live events)" };
     }
     case "discovery": {
+      if (config.providers.discovery === "amplemarket") return testAmplemarket();
       const r = await providers.discovery.submit({
         companyName: "Integration Test Co",
         domain: "integration-test.example",
@@ -137,8 +153,14 @@ async function runTest(id: string, to: string | undefined): Promise<{ ok: boolea
       return { ok: r.accepted, message: r.note };
     }
     case "crm": {
+      if (config.providers.crm === "attio") return testAttio();
       const rows = await providers.crm.exportHistorical();
       return { ok: true, message: `${rows.length} historical records exported` };
+    }
+    case "dialer": {
+      if (config.providers.dialer !== "trellus") return { ok: false, message: `no test for dialer ${config.providers.dialer}` };
+      const [t, a] = [await testTrellus(), await testAttio()];
+      return { ok: t.ok && a.ok, message: `trellus: ${t.message}; attio (call tasks): ${a.message}` };
     }
     default:
       return { ok: false, message: `no test for "${id}"` };

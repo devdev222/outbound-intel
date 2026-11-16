@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { jerryMcp } from "@/lib/agents/jerry-mcp";
-import { descriptor, effective, type ProviderKind, type Slot } from "@/lib/capabilities";
+import { descriptor, effective, missingEnv, type ProviderKind, type Slot } from "@/lib/capabilities";
 import { config, hasLlm, isSupabaseConfigured } from "@/lib/config";
 import type { Store } from "@/lib/store";
 import type { Operation } from "@/lib/types";
@@ -104,7 +104,7 @@ interface Spec {
 
 const SLOT_FOR: Record<string, Slot> = { enrichment: "enrichment", outreach: "outreach", dialer: "dialer", alerts: "alerts", crm: "crm", video: "video", analytics: "analytics" };
 const OTHER_KIND: Record<string, (provider: string) => ProviderKind> = {
-  discovery: (p) => (p === "clay" ? "vendor" : "mock"),
+  discovery: (p) => (p === "clay" || p === "amplemarket" ? "vendor" : "mock"),
   rb2b: (p) => (p === "rb2b" ? "vendor" : "builtin"),
   anthropic: (p) => (p === "anthropic" ? "vendor" : "builtin"),
   jerry: (p) => (p === "jerry-mcp" ? "bridge" : "builtin"),
@@ -128,25 +128,29 @@ export function connectionSpecs(): Spec[] {
   const p = config.providers;
   const jerryEnrich = config.jerry.mode === "mcp";
   const enrichProvider = jerryEnrich ? "jerry-mcp" : p.enrichment;
+  // Sales-stack vendors: settings come straight from the capability registry.
+  const vendorMissing = (slot: Slot, id: string) => missingEnv(descriptor(slot, id));
+  const isVendorEnrich = ["wiza", "amplemarket", "waterfall"].includes(p.enrichment);
   return [
     {
       id: "discovery",
       name: "Account discovery",
       capability: "import",
-      provider: p.discovery === "clay" ? "clay" : "synthetic",
-      transport: p.discovery === "clay" ? "Clay table webhook (outbound) + HTTP callback" : "in-process generator",
-      mock: p.discovery !== "clay",
-      missing: p.discovery === "clay" ? [!config.clay.discoveryWebhookUrl && "CLAY_DISCOVERY_WEBHOOK_URL", !config.clay.inboundSecret && "CLAY_WEBHOOK_SECRET"].filter(Boolean) as string[] : [],
-      mode: p.discovery === "clay" ? "Clay tables via webhooks" : "synthetic companies for the demo",
+      provider: p.discovery === "clay" ? "clay" : p.discovery === "amplemarket" ? "amplemarket" : "synthetic",
+      transport: p.discovery === "clay" ? "Clay table webhook (outbound) + HTTP callback" : p.discovery === "amplemarket" ? "Amplemarket people search (HTTP API)" : "in-process generator",
+      mock: p.discovery === "mock",
+      missing: p.discovery === "amplemarket" ? (config.amplemarket.apiKey ? [] : ["AMPLEMARKET_API_KEY"]) : p.discovery === "clay" ? [!config.clay.discoveryWebhookUrl && "CLAY_DISCOVERY_WEBHOOK_URL", !config.clay.inboundSecret && "CLAY_WEBHOOK_SECRET"].filter(Boolean) as string[] : [],
+      mode: p.discovery === "clay" ? "Clay tables via webhooks" : p.discovery === "amplemarket" ? "companies and their buying-group people from Amplemarket search (signals still come from Clay or the native collector)" : "synthetic companies for the demo",
       unlocks: "Structured discovery: companies, job postings, news, technographics, people.",
-      envVars: [v("DISCOVERY_PROVIDER"), v("CLAY_DISCOVERY_WEBHOOK_URL", true), v("CLAY_WEBHOOK_TOKEN", true), v("CLAY_WEBHOOK_SECRET", true)],
+      envVars: [v("DISCOVERY_PROVIDER"), v("CLAY_DISCOVERY_WEBHOOK_URL", true), v("CLAY_WEBHOOK_TOKEN", true), v("CLAY_WEBHOOK_SECRET", true), v("AMPLEMARKET_API_KEY", true), v("AMPLEMARKET_SEARCH_FILTERS")],
       steps: [
         "Create a Clay table with a Monitor webhook source; paste its URL into CLAY_DISCOVERY_WEBHOOK_URL.",
         `Add an HTTP API column posting the enriched row to ${appUrl}/api/webhooks/clay with header x-webhook-secret (body mapping in docs/WIRING.md).`,
         "Set DISCOVERY_PROVIDER=clay.",
+        "Or Amplemarket: set DISCOVERY_PROVIDER=amplemarket and AMPLEMARKET_API_KEY; optional AMPLEMARKET_SEARCH_FILTERS (JSON for POST /people/search: person_titles, company_industries, company_sizes, locations).",
       ],
       docsUrl: "https://university.clay.com/docs/http-api-integration-overview",
-      test: p.discovery === "clay" ? { available: Boolean(config.clay.discoveryWebhookUrl), sideEffect: "adds a row named Integration Test Co to the Clay discovery table" } : null,
+      test: p.discovery === "clay" ? { available: Boolean(config.clay.discoveryWebhookUrl), sideEffect: "adds a row named Integration Test Co to the Clay discovery table" } : p.discovery === "amplemarket" ? { available: Boolean(config.amplemarket.apiKey), sideEffect: null } : null,
     },
     {
       id: "rb2b",
@@ -168,7 +172,7 @@ export function connectionSpecs(): Spec[] {
       name: "Contact verification",
       capability: "verify",
       provider: enrichProvider,
-      transport: jerryEnrich ? (config.jerry.mcpUrl ? "MCP over HTTP" : "MCP over stdio") : p.enrichment === "clay" ? "Clay table webhook + callback" : p.enrichment === "http" ? "HTTP API" : "in-process",
+      transport: jerryEnrich ? (config.jerry.mcpUrl ? "MCP over HTTP" : "MCP over stdio") : p.enrichment === "clay" ? "Clay table webhook + callback" : p.enrichment === "http" ? "HTTP API" : isVendorEnrich ? descriptor("enrichment", p.enrichment).transport : "in-process",
       mock: !jerryEnrich && (p.enrichment === "mock" || p.enrichment === "test"),
       missing: jerryEnrich
         ? config.jerry.mcpUrl || config.jerry.mcpCommand
@@ -182,12 +186,20 @@ export function connectionSpecs(): Spec[] {
             ? config.enrichmentHttp.apiUrl
               ? []
               : ["ENRICHMENT_API_URL"]
-            : [],
-      mode: jerryEnrich ? "Jerry enrich_contact tool" : p.enrichment === "mock" ? "synthetic contacts (never counted as verified in live mode)" : p.enrichment,
+            : isVendorEnrich
+              ? vendorMissing("enrichment", p.enrichment)
+              : [],
+      mode: jerryEnrich ? "Jerry enrich_contact tool" : p.enrichment === "mock" ? "synthetic contacts (never counted as verified in live mode)" : p.enrichment === "waterfall" ? `waterfall: ${config.enrichmentWaterfall.join(" → ")} (stops once email + verified phone are found)` : p.enrichment,
       unlocks: "Verified direct phone, LinkedIn match and recent context before an account enters a rep's queue.",
-      envVars: [v("ENRICHMENT_PROVIDER"), v("ENRICHMENT_API_URL"), v("ENRICHMENT_API_KEY", true), v("CLAY_ENRICHMENT_WEBHOOK_URL", true), v("JERRY_MODE")],
-      steps: ["Use Jerry over MCP (JERRY_MODE=mcp), Clay (ENRICHMENT_PROVIDER=clay) or an in-house service (ENRICHMENT_PROVIDER=http: POST {name,title,email,linkedin,company,domain}).", "Failures are shown on each account as a blocker with the retry time."],
-      test: jerryEnrich ? { available: Boolean(config.jerry.mcpUrl || config.jerry.mcpCommand), sideEffect: null } : null,
+      envVars: [v("ENRICHMENT_PROVIDER"), v("ENRICHMENT_WATERFALL"), v("WIZA_API_KEY", true), v("WIZA_ENRICHMENT_LEVEL"), v("AMPLEMARKET_API_KEY", true), v("AMPLEMARKET_REVEAL_PHONES"), v("ENRICHMENT_API_URL"), v("ENRICHMENT_API_KEY", true), v("CLAY_ENRICHMENT_WEBHOOK_URL", true), v("JERRY_MODE")],
+      steps: [
+        "Recommended: ENRICHMENT_PROVIDER=waterfall with ENRICHMENT_WATERFALL=wiza,amplemarket (Wiza first for verified email and phone, Amplemarket for what Wiza misses).",
+        `Wiza: create an API key (Settings -> API), set WIZA_API_KEY. Reveals that take longer than WIZA_POLL_SECONDS finish on ${appUrl}/api/webhooks/wiza (checked with x-auth-key).`,
+        "Amplemarket: set AMPLEMARKET_API_KEY; AMPLEMARKET_REVEAL_PHONES=true to spend phone credits.",
+        "Also available: Jerry over MCP (JERRY_MODE=mcp), Clay (ENRICHMENT_PROVIDER=clay), an in-house service (ENRICHMENT_PROVIDER=http).",
+        "Failures are shown on each person as a blocker with the retry time.",
+      ],
+      test: jerryEnrich ? { available: Boolean(config.jerry.mcpUrl || config.jerry.mcpCommand), sideEffect: null } : isVendorEnrich ? { available: vendorMissing("enrichment", p.enrichment).length === 0, sideEffect: null } : null,
     },
     {
       id: "anthropic",
@@ -238,7 +250,7 @@ export function connectionSpecs(): Spec[] {
       name: "Email and sequence delivery",
       capability: "deliver",
       provider: p.outreach,
-      transport: p.outreach === "resend" ? "HTTP API (idempotency keys) + signed webhooks" : p.outreach === "sequencer" ? "HTTP API" : "in-process",
+      transport: p.outreach === "resend" ? "HTTP API (idempotency keys) + signed webhooks" : p.outreach === "sequencer" ? "HTTP API" : p.outreach === "amplemarket" ? "Amplemarket API (add leads) + JSON push" : "in-process",
       mock: p.outreach === "mock" || p.outreach === "test",
       missing:
         p.outreach === "resend"
@@ -247,13 +259,17 @@ export function connectionSpecs(): Spec[] {
             ? config.sequencer.apiUrl
               ? []
               : ["SEQUENCER_API_URL"]
-            : [],
-      mode: p.outreach === "resend" ? `sending as ${config.resend.from || "(RESEND_FROM unset)"}; LinkedIn, InMail and gifts are rep tasks` : p.outreach === "sequencer" ? "the Sequencer owns scheduling" : "nothing is sent; tasks complete only when marked sent",
+            : p.outreach === "amplemarket"
+              ? vendorMissing("outreach", "amplemarket")
+              : [],
+      mode: p.outreach === "amplemarket" ? `each buying-group person is added to Amplemarket sequence ${config.amplemarket.sequenceId || "(AMPLEMARKET_SEQUENCE_ID unset)"}; replies and steps come back by JSON push; pausing a lead has to be done in Amplemarket` : p.outreach === "resend" ? `sending as ${config.resend.from || "(RESEND_FROM unset)"}; LinkedIn, InMail and gifts are rep tasks` : p.outreach === "sequencer" ? "the Sequencer owns scheduling" : "nothing is sent; tasks complete only when marked sent",
       unlocks: "Real delivery of approved email touches; opens/clicks flow back into engagement scoring.",
-      envVars: [v("OUTREACH_PROVIDER"), v("RESEND_API_KEY", true), v("RESEND_FROM"), v("RESEND_REPLY_TO"), v("RESEND_WEBHOOK_SECRET", true), v("RESEND_TEST_TO"), v("SEQUENCER_API_URL"), v("SEQUENCER_API_KEY", true)],
-      steps: ["Resend: verify a sending domain, create an API key, set OUTREACH_PROVIDER=resend, RESEND_API_KEY, RESEND_FROM.", `Add a webhook for email.delivered/opened/clicked/bounced at ${appUrl}/api/webhooks/resend and set RESEND_WEBHOOK_SECRET.`, "Sequencer: set OUTREACH_PROVIDER=sequencer and SEQUENCER_API_URL (contract in lib/providers/outreach.ts)."],
+      envVars: [v("OUTREACH_PROVIDER"), v("RESEND_API_KEY", true), v("RESEND_FROM"), v("RESEND_REPLY_TO"), v("RESEND_WEBHOOK_SECRET", true), v("RESEND_TEST_TO"), v("SEQUENCER_API_URL"), v("SEQUENCER_API_KEY", true), v("AMPLEMARKET_API_KEY", true), v("AMPLEMARKET_SEQUENCE_ID"), v("AMPLEMARKET_SEQUENCE_BY_ROLE"), v("AMPLEMARKET_WEBHOOK_SECRET", true)],
+      steps: ["Resend: verify a sending domain, create an API key, set OUTREACH_PROVIDER=resend, RESEND_API_KEY, RESEND_FROM.", `Add a webhook for email.delivered/opened/clicked/bounced at ${appUrl}/api/webhooks/resend and set RESEND_WEBHOOK_SECRET.`, "Sequencer: set OUTREACH_PROVIDER=sequencer and SEQUENCER_API_URL (contract in lib/providers/outreach.ts).",
+        "Amplemarket: build a sequence whose steps use {{oi_step_1_subject}}, {{oi_step_1_body}}, {{oi_step_2_body}} ... (the engine's copy for each person), set OUTREACH_PROVIDER=amplemarket, AMPLEMARKET_API_KEY and AMPLEMARKET_SEQUENCE_ID.",
+        `Amplemarket: Settings -> Integrations -> JSON data: push sequence stages and replies to ${appUrl}/api/webhooks/amplemarket?token=<AMPLEMARKET_WEBHOOK_SECRET>.`],
       docsUrl: p.outreach === "resend" ? "https://resend.com/docs/api-reference/emails/send-email" : undefined,
-      test: p.outreach === "resend" ? { available: Boolean(config.resend.apiKey && config.resend.from), sideEffect: "sends a real test email to the address you enter", needsRecipient: true } : null,
+      test: p.outreach === "resend" ? { available: Boolean(config.resend.apiKey && config.resend.from), sideEffect: "sends a real test email to the address you enter", needsRecipient: true } : p.outreach === "amplemarket" ? { available: Boolean(config.amplemarket.apiKey), sideEffect: null } : null,
       ops: { kinds: ["send", "sequence_launch", "sequence_pause"], destination: p.outreach },
     },
     {
@@ -277,14 +293,18 @@ export function connectionSpecs(): Spec[] {
       name: "Dialer",
       capability: "deliver",
       provider: p.dialer,
-      transport: p.dialer === "cartage" ? "HTTP API (idempotency keys)" : "in-process call queue",
-      mock: p.dialer !== "cartage",
-      missing: p.dialer === "cartage" && !config.dialer.apiUrl ? ["DIALER_API_URL"] : [],
-      mode: p.dialer === "cartage" ? "calls queued in the Cartage Dialer" : "local call queue only",
+      transport: p.dialer === "cartage" ? "HTTP API (idempotency keys)" : p.dialer === "trellus" ? "Attio task (Trellus dials it) + Trellus Call Data API" : "in-process call queue",
+      mock: p.dialer !== "cartage" && p.dialer !== "trellus",
+      missing: p.dialer === "cartage" && !config.dialer.apiUrl ? ["DIALER_API_URL"] : p.dialer === "trellus" ? vendorMissing("dialer", "trellus") : [],
+      mode: p.dialer === "cartage" ? "calls queued in the Cartage Dialer" : p.dialer === "trellus" ? "hot leads become Attio call tasks that Trellus dials; finished calls are pulled back every 5 minutes" : "local call queue only",
       unlocks: "Calls queued for reps with the talk track attached.",
-      envVars: [v("DIALER_PROVIDER"), v("DIALER_API_URL"), v("DIALER_API_KEY", true)],
-      steps: ["Implement POST {DIALER_API_URL}/queue (proposed contract) or share the real API.", "Set DIALER_PROVIDER=cartage."],
-      test: null,
+      envVars: [v("DIALER_PROVIDER"), v("TRELLUS_API_KEY", true), v("TRELLUS_SYNC_HOURS"), v("ATTIO_API_KEY", true), v("ATTIO_DEFAULT_OWNER_EMAIL"), v("DIALER_API_URL"), v("DIALER_API_KEY", true)],
+      steps: [
+        "Trellus: connect Trellus to Attio in Trellus (Integrations -> Attio) so it dials Attio tasks and writes outcomes back.",
+        "Create a Trellus API key (Settings -> Integrations -> API), set TRELLUS_API_KEY and DIALER_PROVIDER=trellus (needs ATTIO_API_KEY for the call tasks).",
+        "Cartage Dialer: implement POST {DIALER_API_URL}/queue (proposed contract) and set DIALER_PROVIDER=cartage.",
+      ],
+      test: p.dialer === "trellus" ? { available: vendorMissing("dialer", "trellus").length === 0, sideEffect: null } : null,
       ops: { kinds: ["dialer"], destination: p.dialer },
     },
     {
@@ -292,14 +312,18 @@ export function connectionSpecs(): Spec[] {
       name: "CRM history and outcomes",
       capability: "sync",
       provider: p.crm,
-      transport: p.crm === "http" ? "HTTP API" : "in-process",
-      mock: p.crm !== "http",
-      missing: p.crm === "http" && !config.crm.exportUrl ? ["CRM_EXPORT_URL"] : [],
-      mode: p.crm === "http" ? "historical export + outcome write-back" : "synthetic book of business",
+      transport: p.crm === "http" ? "HTTP API" : p.crm === "attio" ? "Attio REST API v2 + signed webhooks" : "in-process",
+      mock: p.crm !== "http" && p.crm !== "attio",
+      missing: p.crm === "http" && !config.crm.exportUrl ? ["CRM_EXPORT_URL"] : p.crm === "attio" ? vendorMissing("crm", "attio") : [],
+      mode: p.crm === "http" ? "historical export + outcome write-back" : p.crm === "attio" ? `deals train the model; outcomes upsert the company, person and deal (matched on ${config.attio.dealMatchAttribute}); accounts owned in Attio stay out of the queue` : "synthetic book of business",
       unlocks: "Real historical conversions for the learning loop and outcome write-back.",
-      envVars: [v("CRM_PROVIDER"), v("CRM_EXPORT_URL"), v("CRM_API_KEY", true)],
-      steps: ["Expose an export endpoint returning historical prospects (signalKeys, persona, outcome, messagingAngle).", "Accept POST {CRM_EXPORT_URL}/outcomes for write-back.", "Set CRM_PROVIDER=http and re-run Learn."],
-      test: p.crm === "http" ? { available: Boolean(config.crm.exportUrl), sideEffect: null } : null,
+      envVars: [v("CRM_PROVIDER"), v("ATTIO_API_KEY", true), v("ATTIO_WEBHOOK_SECRET", true), v("ATTIO_DEAL_MATCH_ATTRIBUTE"), v("ATTIO_DEFAULT_OWNER_EMAIL"), v("ATTIO_COMPANY_OWNER_ATTRIBUTE"), v("ATTIO_STAGE_MAP"), v("CRM_EXPORT_URL"), v("CRM_API_KEY", true)],
+      steps: [
+        "Attio: enable the Deals object; add a unique text attribute on Deals named external_deal_id (or set ATTIO_DEAL_MATCH_ATTRIBUTE).",
+        "Create an access token with record read-write, object configuration read, notes, tasks, workspace members read and webhooks scopes; set ATTIO_API_KEY, ATTIO_DEFAULT_OWNER_EMAIL and CRM_PROVIDER=attio.",
+        `Create a webhook for record.updated on Deals to ${appUrl}/api/webhooks/attio and set ATTIO_WEBHOOK_SECRET to the secret Attio returns (shown once).`,
+        "Generic bridge instead: expose an export endpoint returning historical prospects (signalKeys, persona, outcome, messagingAngle).", "Accept POST {CRM_EXPORT_URL}/outcomes for write-back.", "Set CRM_PROVIDER=http and re-run Learn."],
+      test: p.crm === "http" ? { available: Boolean(config.crm.exportUrl), sideEffect: null } : p.crm === "attio" ? { available: Boolean(config.attio.apiKey), sideEffect: null } : null,
       ops: { kinds: ["crm_sync"], destination: p.crm },
     },
     {

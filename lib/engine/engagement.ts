@@ -45,6 +45,8 @@ export const EVENT_WEIGHTS: Record<string, number> = {
   visitor_identified: 6,
   estimate_submitted: 18,
   meeting_canceled: 0,
+  email_auto_reply: 0,
+  call_completed: 3,
 };
 
 export const HIGH_INTENT_EVENTS = new Set([
@@ -121,6 +123,10 @@ export function describeEvent(e: Pick<EngagementEvent, "eventType" | "properties
       return `Requested their estimate by email${p.email ? ` (${String(p.email)})` : ""}`;
     case "meeting_canceled":
       return "Meeting canceled";
+    case "email_auto_reply":
+      return `Out-of-office reply${p.until ? ` (back ${String(p.until).slice(0, 10)})` : ""}`;
+    case "call_completed":
+      return `Call${p.disposition ? `: ${String(p.disposition)}` : ""}${p.durationSec ? ` (${Math.round(Number(p.durationSec) / 60)} min)` : ""}${p.source ? ` via ${String(p.source)}` : ""}`;
     case "visitor_identified":
       return `Website visitor identified: ${String(p.name ?? "")}${p.title ? `, ${String(p.title)}` : ""}`;
     default:

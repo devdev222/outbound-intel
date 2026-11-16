@@ -107,7 +107,8 @@ async function scoreAccount(account: Account, ctx: AgentContext, explainWithLlm:
   const qualifies = scores.total >= threshold;
   let status = account.status;
   // Readiness gate: a qualifying account enters the queue only when every check passes; otherwise it goes to enrichment.
-  const readinessCtx = await readinessContextFor(ctx.store, account, ctx.model, settings.automation);
+  const ownerOf = ctx.providers.crm.ownerOf?.bind(ctx.providers.crm);
+  const readinessCtx = await readinessContextFor(ctx.store, account, ctx.model, settings.automation, ownerOf ? (a) => ownerOf(a).catch(() => null) : undefined);
   const readiness = evaluateReadiness({ ...account, scores, painHypothesis, messagingAngle }, readinessCtx);
   if (status === "discovered" || status === "scored" || status === "qualified" || status === "needs_enrichment") {
     status = qualifies ? (readiness.ready ? "qualified" : "needs_enrichment") : "scored";

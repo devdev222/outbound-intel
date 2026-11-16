@@ -7,6 +7,10 @@ import { CartageDialerProvider, CartageSequencerProvider, MockDialerProvider, Mo
 import { TestAlertProvider, TestDialerProvider, TestEnrichmentProvider, TestOutreachProvider } from "@/lib/providers/testing";
 import type { AlertProvider, AnalyticsProvider, CrmProvider, DialerProvider, EnrichmentProvider, OutreachProvider, VideoProvider } from "@/lib/providers/types";
 import { MockVideoProvider, TavusVideoProvider } from "@/lib/providers/video";
+import { AmplemarketEnrichmentProvider, AmplemarketOutreachProvider } from "@/lib/providers/vendors/amplemarket";
+import { AttioCrmProvider, TrellusAttioDialerProvider } from "@/lib/providers/vendors/attio";
+import { WaterfallEnrichmentProvider } from "@/lib/providers/vendors/waterfall";
+import { WizaEnrichmentProvider } from "@/lib/providers/vendors/wiza";
 
 /**
  * Capability registry: the single description of every provider the engine
@@ -47,17 +51,22 @@ export const REGISTRY = {
     d<EnrichmentProvider>({ id: "mock", label: "Synthetic contacts", kind: "mock", transport: "in-process", requiredEnv: [], actions: ["enrichContact"], sideEffects: "none; invents data (refused in live mode)", create: () => new MockEnrichmentProvider() }),
     d<EnrichmentProvider>({ id: "test", label: "Test enrichment", kind: "test", transport: "in-process", requiredEnv: [], actions: ["enrichContact"], sideEffects: "none", create: () => new TestEnrichmentProvider() }),
     d<EnrichmentProvider>({ id: "clay", label: "Clay enrichment table", kind: "vendor", transport: "Clay table webhook (outbound) + HTTP callback", requiredEnv: ["CLAY_ENRICHMENT_WEBHOOK_URL", "CLAY_WEBHOOK_SECRET"], actions: ["enrichContact (async; result arrives on /api/webhooks/clay)"], sideEffects: "adds a row to the Clay table (consumes Clay credits)", docs: "https://university.clay.com/docs/http-api-integration-overview", create: () => new ClayEnrichmentProvider() }),
+    d<EnrichmentProvider>({ id: "wiza", label: "Wiza", kind: "vendor", transport: "HTTP API (individual reveals) + signed callback", requiredEnv: ["WIZA_API_KEY"], actions: ["enrichContact (verified work email, direct/mobile phone)"], sideEffects: "consumes Wiza credits (2 per valid email, 5 per phone found)", docs: "https://docs.wiza.co", create: () => new WizaEnrichmentProvider() }),
+    d<EnrichmentProvider>({ id: "amplemarket", label: "Amplemarket", kind: "vendor", transport: "HTTP API (GET /people/find)", requiredEnv: ["AMPLEMARKET_API_KEY"], actions: ["enrichContact (email, phones, title, LinkedIn)"], sideEffects: "consumes Amplemarket email/phone credits", docs: "https://docs.amplemarket.com", create: () => new AmplemarketEnrichmentProvider() }),
+    d<EnrichmentProvider>({ id: "waterfall", label: "Enrichment waterfall", kind: "vendor", transport: "ordered sources (ENRICHMENT_WATERFALL)", requiredEnv: ["WIZA_API_KEY|AMPLEMARKET_API_KEY"], actions: ["enrichContact (stops once email + verified phone are found)"], sideEffects: "consumes credits only at the sources it reaches", create: () => new WaterfallEnrichmentProvider() }),
     d<EnrichmentProvider>({ id: "http", label: "In-house enrichment service", kind: "bridge", transport: "HTTP API (proposed contract)", requiredEnv: ["ENRICHMENT_API_URL"], actions: ["enrichContact"], sideEffects: "depends on the service (may consume paid lookups)", create: () => new HttpEnrichmentProvider() }),
   ],
   outreach: [
     d<OutreachProvider>({ id: "mock", label: "No sending", kind: "mock", transport: "in-process", requiredEnv: [], actions: ["sendTouch (no-op)"], sideEffects: "none", create: () => new MockOutreachProvider() }),
     d<OutreachProvider>({ id: "test", label: "Test outreach", kind: "test", transport: "in-process", requiredEnv: [], actions: ["sendTouch", "launchSequence", "pauseSequence", "resumeSequence"], sideEffects: "none", create: () => new TestOutreachProvider() }),
     d<OutreachProvider>({ id: "resend", label: "Resend", kind: "vendor", transport: "HTTP API (Idempotency-Key) + signed webhooks", requiredEnv: ["RESEND_API_KEY", "RESEND_FROM", "RESEND_WEBHOOK_SECRET"], actions: ["sendTouch (email)"], sideEffects: "sends real email", docs: "https://resend.com/docs/api-reference/emails/send-email", create: () => new ResendOutreachProvider() }),
+    d<OutreachProvider>({ id: "amplemarket", label: "Amplemarket sequences", kind: "vendor", transport: "HTTP API (add leads) + JSON push", requiredEnv: ["AMPLEMARKET_API_KEY", "AMPLEMARKET_SEQUENCE_ID", "AMPLEMARKET_WEBHOOK_SECRET"], actions: ["launchSequence (one lead per buying-group person, engine copy as data fields)"], sideEffects: "adds real leads to a live Amplemarket sequence (sends email/LinkedIn)", docs: "https://docs.amplemarket.com/api-reference/sequences", create: () => new AmplemarketOutreachProvider() }),
     d<OutreachProvider>({ id: "sequencer", label: "Cartage Sequencer", kind: "bridge", transport: "HTTP API (proposed contract)", requiredEnv: ["SEQUENCER_API_URL", "SEQUENCER_API_KEY"], actions: ["launchSequence", "adaptSequence", "pauseSequence", "resumeSequence"], sideEffects: "schedules real email/InMail in the Sequencer", create: () => new CartageSequencerProvider() }),
   ],
   dialer: [
     d<DialerProvider>({ id: "mock", label: "Local call queue", kind: "builtin", transport: "in-process", requiredEnv: [], actions: ["queueCall (local list)"], sideEffects: "none outside this app", create: () => new MockDialerProvider() }),
     d<DialerProvider>({ id: "test", label: "Test dialer", kind: "test", transport: "in-process", requiredEnv: [], actions: ["queueCall"], sideEffects: "none", create: () => new TestDialerProvider() }),
+    d<DialerProvider>({ id: "trellus", label: "Trellus (via Attio tasks)", kind: "vendor", transport: "Attio task (Trellus dials it) + Trellus Call Data API pull", requiredEnv: ["ATTIO_API_KEY", "TRELLUS_API_KEY"], actions: ["queueCall (Attio task)", "call results (pulled every 5 minutes)"], sideEffects: "creates an Attio task a rep's Trellus dialer picks up", docs: "https://trellus.ai/developers", create: () => new TrellusAttioDialerProvider() }),
     d<DialerProvider>({ id: "cartage", label: "Cartage Dialer", kind: "bridge", transport: "HTTP API (proposed contract)", requiredEnv: ["DIALER_API_URL", "DIALER_API_KEY"], actions: ["queueCall"], sideEffects: "puts a call in a rep's dialer", create: () => new CartageDialerProvider() }),
   ],
   alerts: [
@@ -68,6 +77,7 @@ export const REGISTRY = {
   crm: [
     d<CrmProvider>({ id: "mock", label: "Synthetic history", kind: "mock", transport: "in-process", requiredEnv: [], actions: ["exportHistorical", "logOutcome (no-op)"], sideEffects: "none", create: () => new MockCrmProvider() }),
     d<CrmProvider>({ id: "test", label: "Test CRM", kind: "test", transport: "in-process", requiredEnv: [], actions: ["exportHistorical", "logOutcome"], sideEffects: "none", create: () => new TestCrmProvider() }),
+    d<CrmProvider>({ id: "attio", label: "Attio", kind: "vendor", transport: "REST API v2 + signed webhooks", requiredEnv: ["ATTIO_API_KEY"], actions: ["exportHistorical (deals)", "logOutcome (company, person, deal, note)", "ownerOf"], sideEffects: "writes companies, people, deals and notes in Attio", docs: "https://docs.attio.com/rest-api/overview", create: () => new AttioCrmProvider() }),
     d<CrmProvider>({ id: "http", label: "CRM bridge", kind: "bridge", transport: "HTTP API (proposed contract in front of HubSpot/Salesforce)", requiredEnv: ["CRM_EXPORT_URL", "CRM_API_KEY"], actions: ["exportHistorical", "logOutcome (Idempotency-Key, outcome_id, opportunity_id)"], sideEffects: "writes outcome records to the CRM", create: () => new HttpCrmProvider() }),
   ],
   video: [

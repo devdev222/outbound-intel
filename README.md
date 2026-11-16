@@ -122,6 +122,17 @@ Every account is worked as a buying group, not a single contact.
 - **APIs and MCP.** `GET/POST /api/accounts/:slug/contacts`, `GET/POST /api/contacts/:id`, and the contracts `get_coverage`, `list_contacts`, `research_contacts`, `add_contact`, `replace_contact`, `set_contact_hold`, `create_contact_task`; `contactId` on `list_tasks`, `log_conversation`, `log_outcome` and `record_provider_event`.
 - **Existing accounts** migrate on the agent's first pass: the current contact becomes the primary person of the group and keeps every task already sent.
 
+## Your sales stack
+
+Amplemarket, Attio, Clay, Trellus and Wiza each plug into a slot the engine already uses:
+- **Attio** is the CRM. It provides training history and the owner check, and receives outcomes; deal changes in Attio come back as outcomes.
+- **Wiza, then Amplemarket** verify each person, as a waterfall.
+- **Amplemarket** runs one sequence per buying-group person, and sends replies and steps back by JSON push.
+- **Trellus** dials hot leads queued as Attio tasks; finished calls are pulled back and credited to the person.
+- **Clay** continues to provide discovery and signals.
+
+Setup steps, settings and the API gaps to know about are in [docs/SALES_STACK.md](docs/SALES_STACK.md).
+
 ## Running 24/7
 
 - `npm run worker` as a long-running process (Railway, Fly, ECS), sharing the database with the web app.

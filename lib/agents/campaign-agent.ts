@@ -2,6 +2,7 @@ import { config } from "@/lib/config";
 import { markAgentRun } from "@/lib/engine/accounts";
 import { attemptLaunch, extendGroupOutreach, launchCampaign, launchContactSequences, rebuildForNewContact } from "@/lib/engine/campaign";
 import { liftExpiredHolds } from "@/lib/engine/coordination";
+import { syncTrellusCalls } from "@/lib/engine/call-sync";
 import { holdCanClear } from "@/lib/engine/contact";
 import { proposeGifts } from "@/lib/engine/gifting";
 import { processDueTouches } from "@/lib/engine/outreach";
@@ -73,6 +74,12 @@ export const campaignAgent: AgentDefinition = {
       await launchContactSequences(ctx.store, ctx.providers, a);
     }
 
+    // Trellus has no webhooks: pull finished calls (at most every 5 minutes) and credit them to people.
+    const calls = await syncTrellusCalls(ctx.store, ctx.providers).catch((err) => {
+      ctx.log(`trellus call sync failed: ${(err as Error).message}`);
+      return { fetched: 0, recorded: 0, unmatched: 0, skipped: true };
+    });
+
     const pauseSynced = await retryPauseSyncs(ctx.store, ctx.providers);
     const due = await processDueTouches(ctx.store, ctx.providers, { log: ctx.log, activity: ctx.activity });
 
@@ -89,6 +96,7 @@ export const campaignAgent: AgentDefinition = {
     if (rebuilt) parts.push(`${rebuilt} sequences rebuilt for new contacts`);
     if (extended) parts.push(`${extended} people added to running outreach`);
     if (resumed) parts.push(`${resumed} held contacts resumed`);
+    if (calls.recorded) parts.push(`${calls.recorded} Trellus calls recorded${calls.unmatched ? ` (${calls.unmatched} unmatched)` : ""}`);
     if (pauseSynced) parts.push(`${pauseSynced} pause syncs recovered`);
     if (proposed) parts.push(`${proposed} gifts proposed`);
     if (due.sent) parts.push(`${due.sent} tasks delivered via ${ctx.providers.outreach.name}`);

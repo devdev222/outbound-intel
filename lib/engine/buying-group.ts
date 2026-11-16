@@ -1,5 +1,5 @@
 import { config } from "@/lib/config";
-import type { Providers } from "@/lib/providers";
+import type { EnrichmentResult, Providers } from "@/lib/providers";
 import type { Store } from "@/lib/store";
 import { isSuppressed } from "@/lib/store/collections";
 import type { Account, BuyingContact, BuyingGroupCoverage, BuyingGroupPlan, BuyingRole, ContactVerification, Person, ScoringModel, SegmentBuyingGroup } from "@/lib/types";
@@ -189,15 +189,16 @@ export function verifyDue(c: BuyingContact, at = nowIso()): boolean {
  * duplicates within the account, and suppression. Failures are recorded with
  * a bounded retry; synthetic data never counts as verified in live mode.
  */
-export async function verifyContact(store: Store, providers: Providers, account: Account, contact: BuyingContact): Promise<BuyingContact> {
+export async function verifyContact(store: Store, providers: Providers, account: Account, contact: BuyingContact, preset?: EnrichmentResult): Promise<BuyingContact> {
   const at = nowIso();
   let person = contact.person;
   let enrichError: string | null = null;
   let provider: string = providers.enrichment.name;
   let synthetic = false;
   try {
-    const res = config.jerry.mode === "mcp" ? await (await import("@/lib/agents/jerry-mcp")).jerryMcp.enrichContactOrThrow(person, account) : await providers.enrichment.enrichContact(person, account);
-    provider = config.jerry.mode === "mcp" ? "jerry-mcp" : res.provider;
+    // A preset result is an asynchronous provider's callback (e.g. Wiza); no second paid lookup.
+    const res = preset ?? (config.jerry.mode === "mcp" ? await (await import("@/lib/agents/jerry-mcp")).jerryMcp.enrichContactOrThrow(person, account) : await providers.enrichment.enrichContact(person, account, { contactId: contact.id }));
+    provider = preset ? preset.provider : config.jerry.mode === "mcp" ? "jerry-mcp" : res.provider;
     synthetic = res.provenance === "synthetic";
     person = mergeContact(person, { name: res.contact.name, title: res.contact.title, email: res.contact.email, phone: res.contact.phone, linkedin: res.contact.linkedin, phoneVerified: res.phoneVerified === true }, synthetic ? "synthetic" : provider);
     if (synthetic) person = { ...person, verifiedBy: "synthetic" };

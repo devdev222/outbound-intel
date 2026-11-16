@@ -3,6 +3,7 @@ import { create } from "@/lib/capabilities";
 import { ClayDiscoveryProvider, ClaySignalCollector } from "./discovery/clay";
 import { MockDiscoveryProvider, MockSignalCollector } from "./discovery/mock";
 import { NativeSignalCollector } from "./discovery/native";
+import { AmplemarketDiscoveryProvider } from "./vendors/amplemarket";
 import type { Providers, SignalCollector } from "./types";
 
 export type * from "./types";
@@ -21,7 +22,7 @@ export function getProviders(): Providers {
   if (globalThis.__outboundIntelProviders) return globalThis.__outboundIntelProviders;
 
   const clay = new ClayDiscoveryProvider();
-  const discovery = config.providers.discovery === "clay" ? clay : new MockDiscoveryProvider();
+  const discovery = config.providers.discovery === "clay" ? clay : config.providers.discovery === "amplemarket" ? new AmplemarketDiscoveryProvider() : new MockDiscoveryProvider();
 
   const mockCollector = new MockSignalCollector();
   const clayCollector = new ClaySignalCollector(clay);
@@ -30,6 +31,7 @@ export function getProviders(): Providers {
     if (source === "native") return nativeCollector;
     if (source === "clay") return clayCollector;
     // "discovery": whatever the discovery provider already collected (mock facts or Clay rows)
+    // Amplemarket returns people and firmographics, not signals; mock signals stand in until Clay or native collectors are routed.
     return config.providers.discovery === "clay" ? null : mockCollector;
   };
 

@@ -54,7 +54,8 @@ export interface EnrichmentResult {
 
 export interface EnrichmentProvider {
   readonly name: string;
-  enrichContact(person: Person, account: Account): Promise<EnrichmentResult>;
+  /** opts.contactId lets asynchronous providers route their callback to the right buying-group person. */
+  enrichContact(person: Person, account: Account, opts?: { contactId?: string }): Promise<EnrichmentResult>;
 }
 
 // Video ----------------------------------------------------------------------
@@ -164,6 +165,8 @@ export interface CrmProvider {
    * honored so retries never duplicate; outcome.id is the stable external id.
    */
   logOutcome(account: Account, outcome: Outcome, idempotencyKey?: string): Promise<{ remoteId?: string | null } | void>;
+  /** Who already owns this account in the CRM (name), or null. Readiness keeps owned accounts out of the queue. */
+  ownerOf?(account: Account): Promise<string | null>;
 }
 
 // Bundle ---------------------------------------------------------------------
