@@ -176,6 +176,19 @@ export const config = {
     webhookSecret: env("AMPLEMARKET_WEBHOOK_SECRET"),
     /** JSON filters for POST /people/search (discovery). */
     searchFilters: env("AMPLEMARKET_SEARCH_FILTERS"),
+    /**
+     * sequence: Amplemarket runs a full sequence per person (its own timing; holds become rep tasks).
+     * steps: the engine times every touch and hands each one to a one-step Amplemarket sequence,
+     * so holds, pauses, approvals and account-wide limits apply to Amplemarket email too.
+     */
+    mode: pick("AMPLEMARKET_MODE", ["sequence", "steps"] as const, "sequence"),
+    /** steps mode: one-step sequence ids in order (touch 1 uses the first, touch 2 the second...; the last repeats). */
+    stepSequenceIds: env("AMPLEMARKET_STEP_SEQUENCE_IDS")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean),
+    /** Pull Amplemarket's exclusion list into suppressions and push ours to it (needs AMPLEMARKET_API_KEY). */
+    syncExclusions: env("AMPLEMARKET_SYNC_EXCLUSIONS", "true") === "true",
     /** Reveal phone numbers on enrichment (1 phone credit each). */
     revealPhones: env("AMPLEMARKET_REVEAL_PHONES", "false") === "true",
   },
@@ -191,6 +204,8 @@ export const config = {
     /** How far back each call-data sync looks. */
     syncHours: envNumber("TRELLUS_SYNC_HOURS", 24),
   },
+  /** Paid verification lookups allowed per UTC day / month (0 = no cap). Mock and test providers are free. */
+  enrichmentBudget: { daily: envNumber("ENRICHMENT_DAILY_LIMIT", 100), monthly: envNumber("ENRICHMENT_MONTHLY_LIMIT", 2000) },
   /** Ordered enrichment sources for ENRICHMENT_PROVIDER=waterfall. */
   enrichmentWaterfall: env("ENRICHMENT_WATERFALL", "wiza,amplemarket")
     .split(",")

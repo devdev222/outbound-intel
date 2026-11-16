@@ -128,7 +128,9 @@ export async function deliverTask(store: Store, providers: Providers, task: Task
   const sending: Task = { ...task, status: "sending" };
   const outcome = await runOperation(store, { id: `send:${task.id}`, kind: "send", accountId: account.id, destination: providers.outreach.name, maxAttempts: MAX_SEND_ATTEMPTS }, async (key) => {
     await store.updateOutreach(sending);
-    const r = await providers.outreach.sendTouch(account, task, key);
+    // Which of this person's touches on this channel this is (1-based), for providers that map steps to sequences.
+    const personStep = task.contactId ? (await store.listOutreach({ accountId: task.accountId })).filter((t) => t.contactId === task.contactId && t.channel === task.channel && (t.source === "sequence" || t.source === undefined) && t.step <= task.step).length || 1 : 1;
+    const r = await providers.outreach.sendTouch(account, task, key, { personStep });
     if (r.status !== "sent") {
       const err = new Error(r.note ?? "provider did not accept the message") as Error & { permanent?: boolean };
       if (r.retryable === false) err.permanent = true;

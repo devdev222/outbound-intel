@@ -191,13 +191,14 @@ export function connectionSpecs(): Spec[] {
               : [],
       mode: jerryEnrich ? "Jerry enrich_contact tool" : p.enrichment === "mock" ? "synthetic contacts (never counted as verified in live mode)" : p.enrichment === "waterfall" ? `waterfall: ${config.enrichmentWaterfall.join(" → ")} (stops once email + verified phone are found)` : p.enrichment,
       unlocks: "Verified direct phone, LinkedIn match and recent context before an account enters a rep's queue.",
-      envVars: [v("ENRICHMENT_PROVIDER"), v("ENRICHMENT_WATERFALL"), v("WIZA_API_KEY", true), v("WIZA_ENRICHMENT_LEVEL"), v("AMPLEMARKET_API_KEY", true), v("AMPLEMARKET_REVEAL_PHONES"), v("ENRICHMENT_API_URL"), v("ENRICHMENT_API_KEY", true), v("CLAY_ENRICHMENT_WEBHOOK_URL", true), v("JERRY_MODE")],
+      envVars: [v("ENRICHMENT_PROVIDER"), v("ENRICHMENT_WATERFALL"), v("ENRICHMENT_DAILY_LIMIT"), v("ENRICHMENT_MONTHLY_LIMIT"), v("WIZA_API_KEY", true), v("WIZA_ENRICHMENT_LEVEL"), v("AMPLEMARKET_API_KEY", true), v("AMPLEMARKET_REVEAL_PHONES"), v("ENRICHMENT_API_URL"), v("ENRICHMENT_API_KEY", true), v("CLAY_ENRICHMENT_WEBHOOK_URL", true), v("JERRY_MODE")],
       steps: [
         "Recommended: ENRICHMENT_PROVIDER=waterfall with ENRICHMENT_WATERFALL=wiza,amplemarket (Wiza first for verified email and phone, Amplemarket for what Wiza misses).",
         `Wiza: create an API key (Settings -> API), set WIZA_API_KEY. Reveals that take longer than WIZA_POLL_SECONDS finish on ${appUrl}/api/webhooks/wiza (checked with x-auth-key).`,
         "Amplemarket: set AMPLEMARKET_API_KEY; AMPLEMARKET_REVEAL_PHONES=true to spend phone credits.",
         "Also available: Jerry over MCP (JERRY_MODE=mcp), Clay (ENRICHMENT_PROVIDER=clay), an in-house service (ENRICHMENT_PROVIDER=http).",
-        "Failures are shown on each person as a blocker with the retry time.",
+        `Spending: at most ${config.enrichmentBudget.daily || "unlimited"} paid lookups a day and ${config.enrichmentBudget.monthly || "unlimited"} a month (ENRICHMENT_DAILY_LIMIT, ENRICHMENT_MONTHLY_LIMIT); only the people the plan needs are verified, and a backup only when someone is replaced.`,
+        "Failures and budget waits are shown on each person as a blocker with the retry time.",
       ],
       test: jerryEnrich ? { available: Boolean(config.jerry.mcpUrl || config.jerry.mcpCommand), sideEffect: null } : isVendorEnrich ? { available: vendorMissing("enrichment", p.enrichment).length === 0, sideEffect: null } : null,
     },
@@ -262,9 +263,9 @@ export function connectionSpecs(): Spec[] {
             : p.outreach === "amplemarket"
               ? vendorMissing("outreach", "amplemarket")
               : [],
-      mode: p.outreach === "amplemarket" ? `each buying-group person is added to Amplemarket sequence ${config.amplemarket.sequenceId || "(AMPLEMARKET_SEQUENCE_ID unset)"}; replies and steps come back by JSON push; pausing a lead has to be done in Amplemarket` : p.outreach === "resend" ? `sending as ${config.resend.from || "(RESEND_FROM unset)"}; LinkedIn, InMail and gifts are rep tasks` : p.outreach === "sequencer" ? "the Sequencer owns scheduling" : "nothing is sent; tasks complete only when marked sent",
+      mode: p.outreach === "amplemarket" ? (config.amplemarket.mode === "steps" ? `the engine times every touch and hands each to a one-step Amplemarket sequence (${config.amplemarket.stepSequenceIds.length || "no"} configured), so holds, approvals and account-wide limits apply; opt-outs sync both ways` : `each buying-group person is added to Amplemarket sequence ${config.amplemarket.sequenceId || "(AMPLEMARKET_SEQUENCE_ID unset)"}; Amplemarket times it, so holds become "pause in Amplemarket" rep tasks; opt-outs sync both ways`) : p.outreach === "resend" ? `sending as ${config.resend.from || "(RESEND_FROM unset)"}; LinkedIn, InMail and gifts are rep tasks` : p.outreach === "sequencer" ? "the Sequencer owns scheduling" : "nothing is sent; tasks complete only when marked sent",
       unlocks: "Real delivery of approved email touches; opens/clicks flow back into engagement scoring.",
-      envVars: [v("OUTREACH_PROVIDER"), v("RESEND_API_KEY", true), v("RESEND_FROM"), v("RESEND_REPLY_TO"), v("RESEND_WEBHOOK_SECRET", true), v("RESEND_TEST_TO"), v("SEQUENCER_API_URL"), v("SEQUENCER_API_KEY", true), v("AMPLEMARKET_API_KEY", true), v("AMPLEMARKET_SEQUENCE_ID"), v("AMPLEMARKET_SEQUENCE_BY_ROLE"), v("AMPLEMARKET_WEBHOOK_SECRET", true)],
+      envVars: [v("OUTREACH_PROVIDER"), v("RESEND_API_KEY", true), v("RESEND_FROM"), v("RESEND_REPLY_TO"), v("RESEND_WEBHOOK_SECRET", true), v("RESEND_TEST_TO"), v("SEQUENCER_API_URL"), v("SEQUENCER_API_KEY", true), v("AMPLEMARKET_API_KEY", true), v("AMPLEMARKET_SEQUENCE_ID"), v("AMPLEMARKET_SEQUENCE_BY_ROLE"), v("AMPLEMARKET_WEBHOOK_SECRET", true), v("AMPLEMARKET_MODE"), v("AMPLEMARKET_STEP_SEQUENCE_IDS"), v("AMPLEMARKET_SYNC_EXCLUSIONS")],
       steps: ["Resend: verify a sending domain, create an API key, set OUTREACH_PROVIDER=resend, RESEND_API_KEY, RESEND_FROM.", `Add a webhook for email.delivered/opened/clicked/bounced at ${appUrl}/api/webhooks/resend and set RESEND_WEBHOOK_SECRET.`, "Sequencer: set OUTREACH_PROVIDER=sequencer and SEQUENCER_API_URL (contract in lib/providers/outreach.ts).",
         "Amplemarket: build a sequence whose steps use {{oi_step_1_subject}}, {{oi_step_1_body}}, {{oi_step_2_body}} ... (the engine's copy for each person), set OUTREACH_PROVIDER=amplemarket, AMPLEMARKET_API_KEY and AMPLEMARKET_SEQUENCE_ID.",
         `Amplemarket: Settings -> Integrations -> JSON data: push sequence stages and replies to ${appUrl}/api/webhooks/amplemarket?token=<AMPLEMARKET_WEBHOOK_SECRET>.`],

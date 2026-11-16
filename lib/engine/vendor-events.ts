@@ -98,7 +98,10 @@ export async function handleAmplemarketEvent(store: Store, providers: Providers,
   }
   const sentAt = typeof p.date === "string" && !Number.isNaN(Date.parse(p.date)) ? new Date(p.date).toISOString() : nowIso();
   const mine = (await store.listOutreach({ accountId: account.id })).filter((t) => t.contactId === contact!.id && MESSAGE_CHANNELS.includes(t.channel) && (t.source === "sequence" || t.source === undefined)).sort((a, b) => a.step - b.step);
-  const task = (stage.index && mine[stage.index - 1]) || mine.find((t) => t.channel === channel && t.status === "scheduled");
+  const byId = typeof dyn.oi_touch_id === "string" ? mine.find((t) => t.id === dyn.oi_touch_id) : undefined;
+  // Steps mode: the engine recorded this send when it handed the touch over.
+  if (byId?.status === "sent") return { matched: true, contactId: contact.id, handled: "already recorded" };
+  const task = byId ?? ((stage.index && mine[stage.index - 1]) || mine.find((t) => t.channel === channel && t.status === "scheduled"));
   if (task && task.status !== "sent") await store.updateOutreach({ ...task, status: "sent", sentAt, completionMode: "provider", note: `sent by Amplemarket${meta.sequence ? ` (${meta.sequence})` : ""}` });
   await store.patchContact(contact.id, (c) => ({ ...c, outreach: { ...c.outreach, touchesSent: c.outreach.touchesSent + 1, lastTouchAt: sentAt } }));
   await recordEngagement(store, providers, account, { eventType: channel === "linkedin" ? "linkedin_sent" : "email_sent", properties: { ...meta, step: stage.index ?? null, touchId: task?.id }, source: "provider", contactId: contact.id });

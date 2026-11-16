@@ -3,6 +3,7 @@ import { markAgentRun } from "@/lib/engine/accounts";
 import { attemptLaunch, extendGroupOutreach, launchCampaign, launchContactSequences, rebuildForNewContact } from "@/lib/engine/campaign";
 import { liftExpiredHolds } from "@/lib/engine/coordination";
 import { syncTrellusCalls } from "@/lib/engine/call-sync";
+import { syncAmplemarketExclusions } from "@/lib/engine/suppression-sync";
 import { holdCanClear } from "@/lib/engine/contact";
 import { proposeGifts } from "@/lib/engine/gifting";
 import { processDueTouches } from "@/lib/engine/outreach";
@@ -80,6 +81,12 @@ export const campaignAgent: AgentDefinition = {
       return { fetched: 0, recorded: 0, unmatched: 0, skipped: true };
     });
 
+    // Opt-outs both ways with Amplemarket's exclusion lists (at most every 10 minutes).
+    const exclusions = await syncAmplemarketExclusions(ctx.store, ctx.providers).catch((err) => {
+      ctx.log(`amplemarket exclusion sync failed: ${(err as Error).message}`);
+      return { pushed: 0, pulled: 0, skipped: true };
+    });
+
     const pauseSynced = await retryPauseSyncs(ctx.store, ctx.providers);
     const due = await processDueTouches(ctx.store, ctx.providers, { log: ctx.log, activity: ctx.activity });
 
@@ -96,6 +103,7 @@ export const campaignAgent: AgentDefinition = {
     if (rebuilt) parts.push(`${rebuilt} sequences rebuilt for new contacts`);
     if (extended) parts.push(`${extended} people added to running outreach`);
     if (resumed) parts.push(`${resumed} held contacts resumed`);
+    if (exclusions.pushed || exclusions.pulled) parts.push(`exclusions synced with Amplemarket (${exclusions.pushed} pushed, ${exclusions.pulled} opted out from there)`);
     if (calls.recorded) parts.push(`${calls.recorded} Trellus calls recorded${calls.unmatched ? ` (${calls.unmatched} unmatched)` : ""}`);
     if (pauseSynced) parts.push(`${pauseSynced} pause syncs recovered`);
     if (proposed) parts.push(`${proposed} gifts proposed`);

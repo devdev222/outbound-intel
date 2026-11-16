@@ -8,7 +8,7 @@ How the engine uses each tool, and the exact setup to turn each one on. Every ad
 |---|---|---|
 | Find accounts and their people | Amplemarket people search (or Clay tables, already supported) | `DISCOVERY_PROVIDER=amplemarket` |
 | Buying signals (hiring, expansion, tech, pain) | Clay tables, or the native collector | `SIGNAL_SOURCE_*=clay` / `native` |
-| Verify each person (work email, direct phone) | Wiza first, Amplemarket for what Wiza misses | `ENRICHMENT_PROVIDER=waterfall`, `ENRICHMENT_WATERFALL=wiza,amplemarket` |
+| Verify each person (work email, direct phone) | Wiza first, Amplemarket for what Wiza misses, within a credit budget | `ENRICHMENT_PROVIDER=waterfall`, `ENRICHMENT_WATERFALL=wiza,amplemarket`, `ENRICHMENT_DAILY_LIMIT` |
 | Run the sequences | Amplemarket (one lead per buying-group person) | `OUTREACH_PROVIDER=amplemarket` |
 | Replies and steps back into the engine | Amplemarket JSON push | `AMPLEMARKET_WEBHOOK_SECRET` |
 | Calls | Trellus dials Attio tasks; call results pulled from Trellus | `DIALER_PROVIDER=trellus` |
@@ -80,15 +80,41 @@ Put the settings in `.env.local` for local runs, or in your host's environment s
   | asked to circle back | A rep task |
 
 **Not covered by the API:**
-- A lead can't be paused or removed from a sequence through the API. When the engine holds or pauses someone, pause them in Amplemarket too; the account shows that it couldn't.
+- A lead can't be paused or removed from a sequence through the API. Use steps mode, or act on the "Pause in amplemarket" rep tasks.
 - Opens, clicks, bounces and unsubscribes aren't pushed.
 - Amplemarket enrichment doesn't say whether an email is valid, which is why Wiza goes first in the waterfall.
+
+### Who controls timing: two modes
+
+- **`AMPLEMARKET_MODE=sequence`** (default). Amplemarket runs each person's full sequence on its own timing.
+  - The engine's account-wide limits (one message to anyone at the company per day, five per week) can't apply to Amplemarket's own timing.
+  - The API can't pause a person. When the engine holds someone (a colleague replied, a meeting, an opt-out, a wrong contact), it creates one rep task, **"Pause N people in amplemarket"**, naming who to pause.
+- **`AMPLEMARKET_MODE=steps`**. The engine times every touch and hands each one to a **one-step** Amplemarket sequence when it's due. Holds, pauses, approvals and the account-wide limits then apply to Amplemarket email exactly as they do to everything else. Setup:
+  1. Create one-step sequences, one per position. Each has a single email step whose subject is `{{oi_subject}}` and whose body is `{{oi_body}}`. Five positions covers the default cadence; a touch past the last position reuses the last one.
+  2. Set `AMPLEMARKET_STEP_SEQUENCE_IDS=seq_a,seq_b,seq_c,seq_d,seq_e` in order.
+
+  In this mode LinkedIn steps become rep tasks.
+
+  Not yet confirmed with a real account: whether Amplemarket completes a lead after the single step (so the next one-step sequence accepts them). The engine adds leads with `ignore_duplicate_leads_in_other_active_sequences` set so that it shouldn't matter. Check this in the test run.
+
+### Opt-outs stay in step
+
+Every 10 minutes (`AMPLEMARKET_SYNC_EXCLUSIONS=true`), the Campaign Agent syncs opt-outs both ways:
+- It pushes the app's suppressions to Amplemarket's exclusion lists: emails to `/excluded-emails`, `@domain` entries to `/excluded-domains`.
+- It pulls Amplemarket's excluded emails. Anyone on that list who is one of our people, for example because they unsubscribed in Amplemarket, is suppressed here and opted out of their group.
+
+Each entry is pushed once, and nothing that came from Amplemarket is pushed back.
 
 ## Wiza (contact verification)
 
 1. Create an **API key** (Settings → API) and set `WIZA_API_KEY`.
 2. `WIZA_ENRICHMENT_LEVEL=full` (default) reveals email and phone. Use `partial` for email only.
 3. Reveals that take longer than `WIZA_POLL_SECONDS` (default 20) finish on `https://<your app>/api/webhooks/wiza`. Wiza signs this callback with your key, so there is nothing to configure. The app URL has to be public HTTPS (`NEXT_PUBLIC_APP_URL`).
+
+**Spending limit:**
+- `ENRICHMENT_DAILY_LIMIT` (default 100) and `ENRICHMENT_MONTHLY_LIMIT` (default 2000) cap paid verification lookups for every source. 0 means no cap.
+- When a cap is reached, people wait with "waiting for enrichment budget; resumes <date>". Nothing is spent, and the wait doesn't count as a failed attempt.
+- Only as many people per role as the plan needs are verified, selected people first. A backup is verified only when someone is replaced, with one lookup at that moment.
 
 **What happens:**
 - Only an email Wiza marks `valid` counts as verified; `risky` doesn't.

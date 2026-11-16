@@ -12,9 +12,14 @@ import type { DiscoveryProvider, EnrichmentProvider, EnrichmentResult, LaunchRes
  * docs.amplemarket.com and the published OpenAPI spec, read 2026-11-16; not
  * yet verified against a real account.
  *
- *   sequences  POST /sequences/{id}/leads   (max 250 leads, 30 req/min). Our engine-written
- *              copy travels as lead `data` fields the sequence's steps reference
- *              ({{oi_step_1_body}} ...), so personalization and Lab arms still apply.
+ *   sequences  POST /sequences/{id}/leads   (max 250 leads, 30 req/min). Two modes:
+ *              sequence (default): one full sequence per person; our engine-written copy
+ *                travels as lead `data` fields its steps reference ({{oi_step_1_body}} ...).
+ *                Amplemarket owns the timing; holds become rep tasks (no pause API).
+ *              steps: the engine times each touch and adds the person to a one-step
+ *                sequence when it is due ({{oi_subject}}, {{oi_body}}), so holds, pauses,
+ *                approvals and account-wide limits apply. Touch N uses AMPLEMARKET_STEP_SEQUENCE_IDS[N].
+ *   exclusions POST/GET /excluded-emails, POST /excluded-domains (opt-out sync, lib/engine/suppression-sync.ts)
  *   events     JSON push configured in the dashboard (no API, no signature): sequence
  *              stage and reply payloads -> /api/webhooks/amplemarket?token=...
  *   enrich     GET /people/find (reveal_email, reveal_phone_numbers; credits per reveal)
@@ -125,10 +130,14 @@ export function sequenceFor(person: Person): string {
 
 export class AmplemarketOutreachProvider implements OutreachProvider {
   readonly name = "amplemarket";
-  readonly channels: OutreachTouch["channel"][] = ["email", "linkedin"];
-  readonly ownsScheduling = true;
+  private readonly steps = config.amplemarket.mode === "steps";
+  readonly channels: OutreachTouch["channel"][] = this.steps ? ["email"] : ["email", "linkedin"];
+  readonly ownsScheduling = !this.steps;
+  readonly pausesLeads = this.steps;
 
   async launchSequence(account: Account, touches: OutreachTouch[]): Promise<LaunchResult> {
+    // Steps mode: nothing to register up front; each touch is handed over when the engine sends it.
+    if (this.steps) return { sequenceId: null, touches };
     const person = account.contact;
     if (!person) throw new PermanentError("no contact to add to the Amplemarket sequence");
     if (!person.email && !person.linkedin) throw new PermanentError(`${person.name} has no email or LinkedIn URL; Amplemarket needs one`);
@@ -150,8 +159,29 @@ export class AmplemarketOutreachProvider implements OutreachProvider {
     };
   }
 
-  async sendTouch(): Promise<SendResult> {
-    return { status: "failed", note: "Amplemarket runs the sequence; single sends are not used", retryable: false };
+  /** Steps mode: add the person to the one-step sequence for this touch, with this touch's copy. */
+  async sendTouch(account: Account, touch: OutreachTouch, _key: string, ctx: { personStep?: number } = {}): Promise<SendResult> {
+    if (!this.steps) return { status: "failed", note: "Amplemarket runs the sequence; single sends are not used", retryable: false };
+    const ids = config.amplemarket.stepSequenceIds;
+    if (!ids.length) return { status: "failed", note: "AMPLEMARKET_STEP_SEQUENCE_IDS is not set", retryable: false };
+    const person = account.contact;
+    if (!person?.email) return { status: "failed", note: "no email for this person", retryable: false };
+    const sequenceId = ids[Math.min(Math.max(1, ctx.personStep ?? 1), ids.length) - 1];
+    const [first, ...rest] = person.name.trim().split(/\s+/);
+    const data: Record<string, string> = { first_name: first ?? person.name, last_name: rest.join(" "), company_name: account.companyName, title: person.title, oi_subject: (touch.subject ?? account.companyName).slice(0, 1024), oi_body: touch.body.slice(0, 1024), oi_account_id: account.id, oi_touch_id: touch.id, ...(touch.contactId ? { oi_contact_id: touch.contactId } : {}) };
+    for (const k of Object.keys(data)) if (!data[k]) delete data[k];
+    const r = AddLeads.parse(
+      await amplemarket(`/sequences/${encodeURIComponent(sequenceId)}/leads`, {
+        method: "POST",
+        // The engine already applied its own spacing and holds; this person may still be finishing the previous one-step sequence.
+        body: { leads: [{ email: person.email, data, overrides: { ignore_recently_contacted: true, ignore_duplicate_leads_in_other_active_sequences: true } }], settings: { leads_distribution: "sequence_senders" } },
+        context: "add lead to step sequence",
+      }),
+    );
+    if (r.in_exclusion_list_and_skipped?.length) return { status: "failed", note: `${person.name} is on Amplemarket's exclusion list`, retryable: false };
+    if (r.already_in_sequence_and_skipped?.length) return { status: "failed", note: `${person.name} is already in step sequence ${sequenceId}; add more one-step sequences to AMPLEMARKET_STEP_SEQUENCE_IDS`, retryable: false };
+    if (!r.total_added_to_sequence) return { status: "failed", note: "Amplemarket did not add the lead", retryable: false };
+    return { status: "sent", externalId: sequenceId, note: `handed to Amplemarket step sequence ${sequenceId}` };
   }
 
   async adaptSequence(_account: Account, reason: string) {

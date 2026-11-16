@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { config } from "@/lib/config";
-import { buildBuyingGroup } from "@/lib/engine/buying-group";
+import { budgetStatus, reserveLookup } from "@/lib/engine/budget";
+import { buildBuyingGroup, mapCandidates, verifyContact } from "@/lib/engine/buying-group";
 import { launchCampaign } from "@/lib/engine/campaign";
 import { resetCallSyncThrottle, syncTrellusCalls } from "@/lib/engine/call-sync";
+import { replaceContactCmd } from "@/lib/engine/contact-commands";
+import { coordinateSignal } from "@/lib/engine/coordination";
+import { resetExclusionSyncThrottle, syncAmplemarketExclusions } from "@/lib/engine/suppression-sync";
+import { deliverTask } from "@/lib/engine/tasks";
 import { handleAmplemarketEvent, handleAttioEvent, handleWizaReveal } from "@/lib/engine/vendor-events";
 import { getProviders } from "@/lib/providers";
 import { effectsOf } from "@/lib/providers/testing";
@@ -14,7 +19,7 @@ import { rowToCall } from "@/lib/providers/vendors/trellus";
 import { WaterfallEnrichmentProvider } from "@/lib/providers/vendors/waterfall";
 import { verifyWizaCallback, WizaEnrichmentProvider } from "@/lib/providers/vendors/wiza";
 import type { Store } from "@/lib/store";
-import { reps } from "@/lib/store/collections";
+import { reps, suppressions } from "@/lib/store/collections";
 import type { Account, Outcome, Person } from "@/lib/types";
 import { uuid } from "@/lib/util";
 import { agentCtx, fresh, makeAccount } from "./helpers";
@@ -370,5 +375,133 @@ describe("Trellus call sync", () => {
     assert.ok(task && task.contactId === tom.id, "a detected meeting becomes a rep task, not a booking");
     const again = await syncTrellusCalls(store, getProviders(), { force: true });
     assert.equal(again.recorded, 0, "the same session is never recorded twice");
+  });
+});
+
+// --- Fixes: credit budget, verify only who is needed, Amplemarket control ----------------------
+
+describe("credit budget and need-based verification", () => {
+  const savedBudget = { ...config.enrichmentBudget };
+  afterEach(() => Object.assign(config.enrichmentBudget, savedBudget));
+
+  it("caps paid lookups per day and never counts free providers", async () => {
+    Object.assign(config.enrichmentBudget, { daily: 2, monthly: 100 });
+    assert.equal((await reserveLookup("wiza")).ok, true);
+    assert.equal((await reserveLookup("amplemarket")).ok, true);
+    const third = await reserveLookup("wiza");
+    assert.equal(third.ok, false);
+    if (!third.ok) assert.match(third.reason, /daily enrichment budget reached \(2\/2\)/);
+    assert.equal((await reserveLookup("test")).ok, true, "test adapters are free");
+    const s = await budgetStatus();
+    assert.deepEqual(s.bySourceToday, { wiza: 1, amplemarket: 1 });
+  });
+
+  it("a person waits for the budget instead of spending, and is not marked failed", async () => {
+    Object.assign(config.enrichmentBudget, { daily: 1, monthly: 100 });
+    await reserveLookup("wiza");
+    let called = 0;
+    const providers = {
+      ...getProviders(),
+      enrichment: {
+        name: "wiza",
+        enrichContact: async () => {
+          called++;
+          throw new Error("should not be called");
+        },
+      },
+    };
+    const a = await makeAccount(store, { contact: null });
+    const [c] = await mapCandidates(store, a);
+    const after = await verifyContact(store, providers, a, c);
+    assert.equal(called, 0);
+    assert.equal(after.ready, false);
+    assert.equal(after.verification.attempts, 0, "a budget wait is not a failed attempt");
+    assert.match(after.blockers[0], /waiting for enrichment budget/);
+    assert.ok(after.verification.nextAttemptAt! > new Date().toISOString());
+  });
+
+  it("verifies only as many people as the plan needs, and a backup only when someone is replaced", async () => {
+    const domain = `ss-${uuid().slice(0, 6)}.example`;
+    const a = await makeAccount(store, { domain, contact: null });
+    const people: Person[] = [
+      { name: "Carla Chen", title: "CFO", seniority: "c_level", email: `carla@${domain}` },
+      { name: "Dev Patel", title: "Director of Logistics", seniority: "director", email: `dev@${domain}` },
+      { name: "Ari Bloom", title: "VP of Logistics", seniority: "vp", email: `ari@${domain}` },
+      { name: "Tom Ruiz", title: "Transportation Manager", seniority: "manager", email: `tom@${domain}` },
+      { name: "Pia Moss", title: "Procurement Manager", seniority: "manager", email: `pia@${domain}` },
+      { name: "Sam Ortiz", title: "Logistics Coordinator", seniority: "ic", email: `sam@${domain}` },
+    ];
+    const r = await buildBuyingGroup(store, getProviders(), (await store.patchAccount(a.id, (cur) => ({ ...cur, facts: { ...cur.facts, people } })))!, null);
+    assert.equal(r.selected.length, 4);
+    assert.equal(effectsOf("enrich", a.id).length, 4, "backups are not paid for up front");
+    const owner = r.selected.find((c) => c.role === "operational_owner")!;
+    const res = await replaceContactCmd(store, getProviders(), owner.id, "left the company", "Test Rep", null);
+    assert.ok(res.replacement, "the backup was verified on the spot and took the role");
+    assert.equal(effectsOf("enrich", a.id).length, 5, "exactly one more lookup");
+  });
+});
+
+describe("Amplemarket control", () => {
+  it("steps mode hands each due touch to the one-step sequence for that position", async () => {
+    Object.assign(config.amplemarket, { mode: "steps", stepSequenceIds: ["step_1", "step_2"] });
+    try {
+      const p = new AmplemarketOutreachProvider();
+      assert.equal(p.ownsScheduling, false, "the engine times every touch");
+      assert.equal(p.pausesLeads, true);
+      const a = await groupAccount();
+      const tom = (await store.listContacts({ accountId: a.id })).find((c) => c.person.name === "Tom Ruiz")!;
+      const mk = (step: number) => ({ id: uuid(), accountId: a.id, contactId: tom.id, channel: "email" as const, step, subject: `S${step}`, body: `Body ${step}`, status: "scheduled" as const, scheduledFor: new Date().toISOString(), provider: "pending", source: "sequence" as const });
+      const t1 = mk(3);
+      const t2 = mk(7);
+      await store.insertOutreach([t1, t2]);
+      stub("POST", /\/sequences\/step_2\/leads$/, { total: 1, total_added_to_sequence: 1 });
+      const r = await deliverTask(store, { ...getProviders(), outreach: p }, t2, a);
+      assert.equal(r.state, "sent");
+      const body = calls[0].body as { leads: { email: string; data: Record<string, string>; overrides: Record<string, boolean> }[] };
+      assert.equal(body.leads[0].email, tom.person.email, "sent to Tom, not the primary contact");
+      assert.equal(body.leads[0].data.oi_body, "Body 7");
+      assert.equal(body.leads[0].data.oi_touch_id, t2.id);
+      assert.equal(body.leads[0].overrides.ignore_duplicate_leads_in_other_active_sequences, true);
+
+      routes = [];
+      stub("POST", /\/leads$/, { total: 1, total_added_to_sequence: 0, in_exclusion_list_and_skipped: [{ email: "x" }] });
+      const blocked = await p.sendTouch({ ...a, contact: tom.person }, t1, "k", { personStep: 1 });
+      assert.equal(blocked.status, "failed");
+      assert.match(blocked.note ?? "", /exclusion list/);
+    } finally {
+      Object.assign(config.amplemarket, { mode: "sequence", stepSequenceIds: [] });
+    }
+  });
+
+  it("sequence mode asks a rep to pause the people Amplemarket keeps sequencing", async () => {
+    const a = await groupAccount();
+    await store.upsertAccount(await launchCampaign(a, await agentCtx(store)));
+    for (const t of await store.listOutreach({ accountId: a.id })) if (t.source === "sequence") await store.updateOutreach({ ...t, provider: "amplemarket" });
+    const tom = (await store.listContacts({ accountId: a.id })).find((c) => c.person.name === "Tom Ruiz")!;
+    const r = await coordinateSignal(store, { ...getProviders(), outreach: new AmplemarketOutreachProvider() }, tom.id, { kind: "replied" }, "test");
+    assert.ok(r.changed.some((c) => /rep asked to pause/.test(c)));
+    const task = (await store.listOutreach({ accountId: a.id })).find((t) => t.title === "Pause 3 people in amplemarket");
+    assert.ok(task, "one task naming everyone to pause");
+    const list = task.body.split("Pause or remove in amplemarket: ")[1] ?? "";
+    assert.ok(list.includes("Carla Chen") && !list.includes("Tom Ruiz"), "the person who replied is not on the pause list (a reply ends their own sequence)");
+  });
+
+  it("syncs opt-outs both ways with Amplemarket's exclusion lists", async () => {
+    const a = await groupAccount();
+    const pia = (await store.listContacts({ accountId: a.id })).find((c) => c.person.name === "Pia Moss")!;
+    await suppressions.put({ id: uuid(), target: "gone@elsewhere.example", reason: "opt_out", note: null, createdBy: "test", at: new Date().toISOString() });
+    await suppressions.put({ id: uuid(), target: "@competitor.example", reason: "competitor", note: null, createdBy: "test", at: new Date().toISOString() });
+    stub("POST", /\/excluded-emails$/, { "gone@elsewhere.example": "success" });
+    stub("POST", /\/excluded-domains$/, { "competitor.example": "success" });
+    stub("GET", /\/excluded-emails\?page\[size\]=2000$/, { excluded_emails: [{ email: pia.person.email!.toUpperCase(), excluded_reason: "unsubscribed" }, { email: "stranger@x.example" }], _links: {} });
+    resetExclusionSyncThrottle();
+    const r = await syncAmplemarketExclusions(store, getProviders(), { force: true });
+    assert.deepEqual({ pushed: r.pushed, pulled: r.pulled }, { pushed: 2, pulled: 1 });
+    assert.deepEqual((calls.find((c) => c.url.endsWith("/excluded-domains"))!.body as { excluded_domains: unknown[] }).excluded_domains, [{ domain: "competitor.example" }]);
+    assert.equal((await store.getContact(pia.id))!.status, "opted_out", "unsubscribed in Amplemarket means opted out here");
+    assert.ok((await suppressions.list()).some((s) => s.target === pia.person.email!.toLowerCase()));
+    calls = [];
+    const again = await syncAmplemarketExclusions(store, getProviders(), { force: true });
+    assert.equal(again.pushed, 0, "nothing is pushed twice, and what came from Amplemarket is not pushed back");
   });
 });
